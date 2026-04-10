@@ -1,9 +1,12 @@
 // src/content.jsx
 import "./style.css";
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import { AnimatePresence, motion } from "framer-motion";
-import { summarize, translate, rewrite, proofread, write } from "./aiBuiltins";
+import {
+  summarize, translate, rewrite, proofread, write,
+  getApiKey, saveApiKey,
+} from "./aiBuiltins";
 
 /* ------------ Layout + Theme Defaults ------------ */
 const defaultPos = { left: null, right: 24, top: null, bottom: 24, width: 560, height: 520 };
@@ -31,13 +34,17 @@ function useStorage(key, initial) {
     chrome.storage.local.onChanged.addListener(l);
     return () => chrome.storage.local.onChanged.removeListener(l);
   }, [key]);
-  const save = (next) => chrome.storage.local.set({ [key]: next });
+  const save = useCallback((next) => chrome.storage.local.set({ [key]: next }), [key]);
   return [val, save];
 }
 
 /* Helpers */
-function clamp(n, min, max){ return Math.max(min, Math.min(max, n)); }
-function isColorLike(s){ return /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(s) || /^rgb/i.test(s) || /^hsl/i.test(s); }
+function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+function isColorLike(s) { return /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(s) || /^rgb/i.test(s) || /^hsl/i.test(s); }
+
+async function copyToClipboard(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch { return false; }
+}
 
 /* Swatch (used in Custom mode) */
 function ColorSwatch({ label, color, onOpen }) {
@@ -106,9 +113,7 @@ function ColorModal({ open, label, value, rawValue, onLive, onConfirm, onClear, 
                 value={isColorLike(pick) ? pick : "#4b5563"}
                 onChange={(e) => {
                   const c = e.target.value;
-                  setPick(c);
-                  setText(c);
-                  onLive(c, c); // live preview
+                  setPick(c); setText(c); onLive(c, c);
                 }}
                 aria-label={`${label} color picker`}
               />
@@ -121,7 +126,7 @@ function ColorModal({ open, label, value, rawValue, onLive, onConfirm, onClear, 
                   setText(t);
                   if (isColorLike(t)) { setPick(t); onLive(t, t); }
                 }}
-                onFocus={(e)=> e.target.select()}
+                onFocus={(e) => e.target.select()}
               />
             </div>
             <div className="fai-pop-actions">
@@ -145,14 +150,17 @@ function App() {
   const [pos, setPos] = useStorage("fai_pos", defaultPos);
   const [theme, setTheme] = useStorage("fai_theme", defaultTheme);
   const [features, setFeatures] = useStorage("fai_features", defaultFeatures);
-  const [preset, setPreset] = useStorage("fai_theme_preset", "default"); // "default" | "ocean" | "forest" | "midnight" | "sunrise" | "lavender" | "custom"
+  const [preset, setPreset] = useStorage("fai_theme_preset", "default");
 
   const [active, setActive] = useState("summarize");
   const [open, setOpen] = useState(false);
-  const [status, setStatus] = useState("");
+  const [status, setStatus] = useState({ text: "", loading: false });
   const [results, setResults] = useState([]);
   const [showSettings, setShowSettings] = useState(false);
   const [paneKey, setPaneKey] = useState(1);
+
+  // Helper to set status with loading flag
+  const setStatusMsg = (text, loading = false) => setStatus({ text, loading });
 
   // Runtime messages
   useEffect(() => {
@@ -165,9 +173,7 @@ function App() {
     return () => chrome.runtime.onMessage.removeListener(handler);
   }, [setEnabled]);
 
-  // Build a style object with CSS variables **scoped** to our widget.
-  // In Custom, we directly supply all tokens. In presets, we leave them
-  // empty so the preset CSS class provides values.
+  // CSS variable style object scoped to our widget
   const varStyle = (() => {
     if (preset === "custom") {
       const bg = theme.bg || THEME_PRESETS.default.bg;
@@ -175,73 +181,72 @@ function App() {
       const accent = theme.accent || THEME_PRESETS.default.accent;
       const text = theme.text || THEME_PRESETS.default.text;
       return {
-        "--fai-bg": bg,
-        "--fai-surface": bg,             // make controls follow Panel Color
-        "--fai-border": border,
-        "--fai-accent": accent,
-        "--fai-text": text,
+        "--fai-bg": bg, "--fai-surface": bg, "--fai-border": border,
+        "--fai-accent": accent, "--fai-text": text,
         "--fai-bubble-size": `${Number(theme.bubble) || 44}px`,
       };
     }
-    // preset path – only bubble size is overridden
-    return {
-      "--fai-bubble-size": `${Number(theme.bubble) || 44}px`,
-    };
+    return { "--fai-bubble-size": `${Number(theme.bubble) || 44}px` };
   })();
 
-  // Drag (bubble/drawer)
+  // Drag
   const dragState = useRef(null);
+  const posRef = useRef(pos);
+  useEffect(() => { posRef.current = pos; }, [pos]);
+
   const onDragStart = (e) => {
     if (e.target.closest(".fai-actions")) return;
     const target = e.currentTarget;
     const rect = target.getBoundingClientRect();
     dragState.current = {
-      dx: e.clientX - rect.left,
-      dy: e.clientY - rect.top,
+      dx: e.clientX - rect.left, dy: e.clientY - rect.top,
       isBubble: target.classList.contains("fai-bubble"),
-      startX: e.clientX,
-      startY: e.clientY,
+      startX: e.clientX, startY: e.clientY,
     };
     window.addEventListener("pointermove", onDragging);
     window.addEventListener("pointerup", onDragEnd);
   };
   const onDragging = (e) => {
     if (!dragState.current) return;
-    const rootStyle = getComputedStyle(document.documentElement);
-    const bubbleSize = parseFloat(rootStyle.getPropertyValue("--fai-bubble-size")) || 44;
+    const p = posRef.current;
+    const bubbleSize = Number(theme.bubble) || 44;
     const isBubble = dragState.current.isBubble;
-    const width = isBubble ? bubbleSize : (pos.width || 560);
-    const height = isBubble ? bubbleSize : (pos.height || 520);
+    const width = isBubble ? bubbleSize : (p.width || 560);
+    const height = isBubble ? bubbleSize : (p.height || 520);
     const left = clamp(e.clientX - dragState.current.dx, 8, window.innerWidth - width - 8);
     const top = clamp(e.clientY - dragState.current.dy, 8, window.innerHeight - height - 8);
-    setPos({ ...pos, left, right: null, top, bottom: null });
+    setPos({ ...p, left, right: null, top, bottom: null });
   };
   const onDragEnd = (e) => {
     if (dragState.current) {
       const dx = Math.abs(e.clientX - dragState.current.startX);
       const dy = Math.abs(e.clientY - dragState.current.startY);
-      const distance = Math.sqrt(dx*dx + dy*dy);
-      if (dragState.current.isBubble && distance < 5) setOpen(true);
+      if (dragState.current.isBubble && Math.sqrt(dx * dx + dy * dy) < 5) setOpen(true);
     }
     dragState.current = null;
     window.removeEventListener("pointermove", onDragging);
     window.removeEventListener("pointerup", onDragEnd);
   };
 
-  // Resize (drawer)
+  // Resize
   const resizeState = useRef(null);
-  const onResizeStart = () => {
-    resizeState.current = { startWidth: pos.width || 560, startHeight: pos.height || 520 };
+  const onResizeStart = (e) => {
+    e.stopPropagation();
+    const p = posRef.current;
+    resizeState.current = {
+      startWidth: p.width || 560, startHeight: p.height || 520,
+      startX: e.clientX, startY: e.clientY,
+    };
     window.addEventListener("pointermove", onResizing);
     window.addEventListener("pointerup", onResizeEnd);
   };
   const onResizing = (e) => {
     if (!resizeState.current) return;
-    const dx = e.clientX - (resizeState.current.sx ?? (resizeState.current.sx = e.clientX));
-    const dy = e.clientY - (resizeState.current.sy ?? (resizeState.current.sy = e.clientY));
-    const width = Math.max(500, (resizeState.current.startWidth + dx));
-    const height = Math.max(320, (resizeState.current.startHeight + dy));
-    setPos({ ...pos, width, height });
+    const dx = e.clientX - resizeState.current.startX;
+    const dy = e.clientY - resizeState.current.startY;
+    const width = Math.max(500, resizeState.current.startWidth + dx);
+    const height = Math.max(320, resizeState.current.startHeight + dy);
+    setPos({ ...posRef.current, width, height });
   };
   const onResizeEnd = () => {
     resizeState.current = null;
@@ -255,33 +260,33 @@ function App() {
   // Run AI operations
   const runOp = async (op, text, opts) => {
     if (!text?.trim()) {
-      setStatus("⚠️ Please enter some text.");
-      setTimeout(() => setStatus(""), 2000);
+      setStatusMsg("⚠️ Please enter some text.");
+      setTimeout(() => setStatusMsg(""), 2000);
       return;
     }
 
-    // Show processing status with more context
-    const statusMessages = {
-      summarize: "⏳ Summarizing... (AI is processing, this may take 10-30 seconds)",
-      translate: "⏳ Translating... (Processing with AI)",
-      proofread: "⏳ Proofreading... (Checking with AI)",
-      rewrite: "⏳ Rewriting... (AI is thinking, please wait)",
-      write: "⏳ Writing... (Generating content with AI)"
+    const labels = {
+      summarize: "Summarizing", translate: "Translating",
+      proofread: "Proofreading", rewrite: "Rewriting", write: "Writing"
     };
-    
-    setStatus(statusMessages[op] || `⏳ Running ${op}...`);
+    setStatusMsg(`⏳ ${labels[op] || "Processing"}…`, true);
     setResults([]);
 
     try {
       let result = "";
-      
+
       if (op === "summarize") {
         result = await summarize(text, opts);
       } else if (op === "translate") {
         result = await translate(text, { to: opts.lang || "en" });
       } else if (op === "proofread") {
         const res = await proofread(text);
-        result = res?.correctedText || String(res);
+        // Build a readable output: corrected text + list of changes
+        const corrected = res?.correctedText || String(res);
+        const changes = Array.isArray(res?.changes) && res.changes.length
+          ? "\n\n📝 Changes:\n" + res.changes.map(c => `• ${c}`).join("\n")
+          : "";
+        result = corrected + changes;
       } else if (op === "rewrite") {
         result = await rewrite(text, opts.mode || "paragraph");
       } else if (op === "write") {
@@ -289,11 +294,16 @@ function App() {
       }
 
       setResults([{ id: Date.now(), text: result }]);
-      setStatus("✅ Done!");
-      setTimeout(() => setStatus(""), 3000);
+      setStatusMsg("✅ Done!");
+      setTimeout(() => setStatusMsg(""), 3000);
     } catch (err) {
-      setStatus(`❌ ${err.message || "An error occurred."}`);
-      setTimeout(() => setStatus(""), 5000);
+      if (err.message === "NO_API_KEY") {
+        setStatusMsg("🔑 Add your free Gemini API key in ⚙️ Settings to get started.");
+        setTimeout(() => setStatusMsg(""), 6000);
+      } else {
+        setStatusMsg(`❌ ${err.message || "An error occurred."}`);
+        setTimeout(() => setStatusMsg(""), 6000);
+      }
     }
   };
 
@@ -340,21 +350,23 @@ function App() {
           <div className="fai-body">
             {showSettings ? (
               <Settings
-                theme={theme}
-                setTheme={setTheme}
-                preset={preset}
-                setPreset={setPreset}
-                bubble={bubble}
-                features={features}
-                setFeatures={setFeatures}
+                theme={theme} setTheme={setTheme}
+                preset={preset} setPreset={setPreset}
+                bubble={bubble} features={features} setFeatures={setFeatures}
               />
             ) : (
               <Pane key={paneKey} active={active} onRun={(input, opts) => runOp(active, input, opts)} />
             )}
             <div className="fai-results" aria-live="polite">
-              {results.map(r => (<div key={r.id} className="fai-result">{r.text}</div>))}
+              {results.map(r => (
+                <ResultCard key={r.id} text={r.text} />
+              ))}
             </div>
-            {status && <div className="fai-status">{status}</div>}
+            {status.text && (
+              <div className={`fai-status${status.loading ? " fai-status--loading" : ""}`}>
+                {status.text}
+              </div>
+            )}
             <div className="fai-resize" onPointerDown={onResizeStart} />
           </div>
         </motion.div>
@@ -363,14 +375,50 @@ function App() {
   );
 }
 
+/* ------------ Result Card with Copy ------------ */
+function ResultCard({ text }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    const ok = await copyToClipboard(text);
+    if (ok) { setCopied(true); setTimeout(() => setCopied(false), 2000); }
+  };
+  return (
+    <div className="fai-result">
+      <div className="fai-result-text">{text}</div>
+      <button
+        className={`fai-copy-btn${copied ? " fai-copy-btn--copied" : ""}`}
+        onClick={handleCopy}
+        title="Copy to clipboard"
+        aria-label="Copy result"
+      >
+        {copied ? "✓ Copied" : "Copy"}
+      </button>
+    </div>
+  );
+}
+
 /* ------------ Settings ------------ */
 function Settings({ theme, setTheme, preset, setPreset, bubble, features, setFeatures }) {
   const [colorModal, setColorModal] = useState({ open: false, key: "", label: "" });
+  const [apiKey, setApiKey] = useState("");
+  const [showKey, setShowKey] = useState(false);
+  const [keySaved, setKeySaved] = useState(false);
   const prevThemeRef = useRef(theme);
   const isCustom = preset === "custom";
 
+  // Load API key on mount
+  useEffect(() => {
+    getApiKey().then(k => setApiKey(k || ""));
+  }, []);
+
+  const handleSaveKey = async () => {
+    await saveApiKey(apiKey.trim());
+    setKeySaved(true);
+    setTimeout(() => setKeySaved(false), 2500);
+  };
+
   const setThemeField = (key, color, raw) => {
-    if (!isCustom) return; // only editable in Custom
+    if (!isCustom) return;
     const next = { ...theme };
     next[key] = color || "";
     next[`${key}Raw`] = raw ?? next[`${key}Raw`] ?? "";
@@ -379,14 +427,10 @@ function Settings({ theme, setTheme, preset, setPreset, bubble, features, setFea
 
   const onPresetChange = (name) => {
     if (name === "custom") {
-      const base = THEME_PRESETS.default; // seed custom from Default
-      setTheme({
-        ...theme,
-        bg: base.bg, border: base.border, accent: base.accent, text: base.text,
-        bgRaw: base.bg, borderRaw: base.border, accentRaw: base.accent, textRaw: base.text,
-      });
+      const base = THEME_PRESETS.default;
+      setTheme({ ...theme, bg: base.bg, border: base.border, accent: base.accent, text: base.text, bgRaw: base.bg, borderRaw: base.border, accentRaw: base.accent, textRaw: base.text });
     } else {
-      setTheme({ ...theme, bg:"",border:"",accent:"",text:"",bgRaw:"",borderRaw:"",accentRaw:"",textRaw:"" });
+      setTheme({ ...theme, bg: "", border: "", accent: "", text: "", bgRaw: "", borderRaw: "", accentRaw: "", textRaw: "" });
     }
     setPreset(name);
   };
@@ -399,7 +443,6 @@ function Settings({ theme, setTheme, preset, setPreset, bubble, features, setFea
   const closeModalKeep = () => setColorModal({ open: false, key: "", label: "" });
   const cancelModal = () => { setTheme(prevThemeRef.current); closeModalKeep(); };
 
-  // text tone for custom
   const setTextTone = (tone) => {
     if (!isCustom) return;
     const map = { black: "#111111", white: "#ffffff", ash: "#cbd5e1" };
@@ -410,11 +453,9 @@ function Settings({ theme, setTheme, preset, setPreset, bubble, features, setFea
     const t = (theme.text || theme.textRaw || "").toLowerCase().replace(/\s+/g, "");
     if (t === "#111111" || t === "rgb(17,17,17)") return "black";
     if (t === "#ffffff" || t === "rgb(255,255,255)") return "white";
-    if (t === "#cbd5e1") return "ash";
     return "ash";
   })();
 
-  // pretty slider progress fill
   const rangePercent = Math.round(((bubble - 32) / (56 - 32)) * 100);
   const onBubbleChange = (e) => {
     const v = Number(e.target.value);
@@ -424,6 +465,52 @@ function Settings({ theme, setTheme, preset, setPreset, bubble, features, setFea
 
   return (
     <div className="fai-settings" style={{ borderBottom: "1px solid var(--fai-border)", position: "relative" }}>
+
+      {/* API Key section */}
+      <div className="fai-apikey-section">
+        <div className="fai-apikey-label">
+          <span>🔑 Gemini API Key</span>
+          <a
+            href="https://aistudio.google.com/app/apikey"
+            target="_blank"
+            rel="noreferrer"
+            className="fai-apikey-link"
+          >
+            Get free key ↗
+          </a>
+        </div>
+        <div className="fai-apikey-row">
+          <input
+            className="fai-apikey-input"
+            type={showKey ? "text" : "password"}
+            placeholder="Paste your Gemini API key here…"
+            value={apiKey}
+            onChange={e => setApiKey(e.target.value)}
+            onFocus={e => e.target.select()}
+            aria-label="Gemini API key"
+            spellCheck={false}
+          />
+          <button
+            className="fai-eye-btn"
+            type="button"
+            onClick={() => setShowKey(v => !v)}
+            title={showKey ? "Hide key" : "Show key"}
+            aria-label={showKey ? "Hide API key" : "Show API key"}
+          >
+            {showKey ? "🙈" : "👁️"}
+          </button>
+          <button
+            className="fai-pop-btn"
+            style={{ borderColor: keySaved ? "var(--fai-accent)" : undefined, whiteSpace: "nowrap" }}
+            onClick={handleSaveKey}
+          >
+            {keySaved ? "✓ Saved!" : "Save"}
+          </button>
+        </div>
+      </div>
+
+      <hr style={{ borderColor: "var(--fai-border)", opacity: .7, margin: "0 0 12px 0" }} />
+
       {/* Theme preset row */}
       <div className="options" style={{ flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
         <label>Theme
@@ -443,10 +530,9 @@ function Settings({ theme, setTheme, preset, setPreset, bubble, features, setFea
             <option value="custom">Custom</option>
           </select>
         </label>
-
         <button
           type="button"
-          onClick={() => { onPresetChange("default"); }}
+          onClick={() => onPresetChange("default")}
           className="fai-reset-btn"
           aria-label="Use Default Theme"
           title="Use Default Theme"
@@ -457,15 +543,13 @@ function Settings({ theme, setTheme, preset, setPreset, bubble, features, setFea
 
       <hr style={{ borderColor: "var(--fai-border)", opacity: .7, margin: "0 0 12px 0" }} />
 
-      {/* Bubble size: always visible */}
+      {/* Bubble size */}
       <div className="fai-grid slim" style={{ marginBottom: 12 }}>
         <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
           Bubble Size
           <input
             className="fai-range"
-            type="range"
-            min="32"
-            max="56"
+            type="range" min="32" max="56"
             value={bubble}
             onChange={onBubbleChange}
             style={{ width: 220, ["--val"]: `${rangePercent}%` }}
@@ -482,28 +566,19 @@ function Settings({ theme, setTheme, preset, setPreset, bubble, features, setFea
             <ColorSwatch label="Border Color" color={theme.border || theme.borderRaw} onOpen={() => openModal("border", "Border Color")} />
             <ColorSwatch label="Accent Color" color={theme.accent || theme.accentRaw} onOpen={() => openModal("accent", "Accent Color")} />
           </div>
-
           <div className="fai-grid slim">
             <label style={{ display: "flex", alignItems: "center", gap: 10 }}>
               Text Color
-              <select
-                value={currentTone}
-                onChange={e => setTextTone(e.target.value)}
-                className="fai-select"
-                aria-label="Text color"
-              >
+              <select value={currentTone} onChange={e => setTextTone(e.target.value)} className="fai-select" aria-label="Text color">
                 <option value="black">Black</option>
                 <option value="white">White</option>
                 <option value="ash">Ash</option>
               </select>
             </label>
           </div>
-
           <ColorModal
-            open={colorModal.open}
-            label={colorModal.label}
-            value={theme[colorModal.key] || ""}
-            rawValue={theme[`${colorModal.key}Raw`] || ""}
+            open={colorModal.open} label={colorModal.label}
+            value={theme[colorModal.key] || ""} rawValue={theme[`${colorModal.key}Raw`] || ""}
             onLive={(c, raw) => setThemeField(colorModal.key, c, raw)}
             onConfirm={closeModalKeep}
             onClear={() => { setThemeField(colorModal.key, "", ""); closeModalKeep(); }}
@@ -514,6 +589,7 @@ function Settings({ theme, setTheme, preset, setPreset, bubble, features, setFea
         <div className="hint">Switch to <b>Custom</b> to edit colors and text tone.</div>
       )}
 
+      {/* Feature toggles */}
       <div className="options" style={{ flexWrap: "wrap", marginTop: 6 }}>
         {Object.keys(features).map(key => (
           <label key={key} style={{ marginRight: 12 }}>
@@ -537,10 +613,10 @@ function Pane({ active, onRun }) {
   const OptsUI = {
     summarize: (
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-        <label>Words <input type="number" min="30" max="800" value={opts.words} onChange={e=>setOpts({ ...opts, words:Number(e.target.value) })} /></label>
-        <span style={{ opacity:.7 }}>or</span>
+        <label>Words <input type="number" min="30" max="800" value={opts.words} onChange={e => setOpts({ ...opts, words: Number(e.target.value) })} /></label>
+        <span style={{ opacity: .7 }}>or</span>
         <label>Length
-          <select value={opts.length} onChange={e=>setOpts({ ...opts, length: e.target.value })}>
+          <select value={opts.length} onChange={e => setOpts({ ...opts, length: e.target.value })}>
             <option value="short">Short</option>
             <option value="medium">Medium</option>
             <option value="long">Long</option>
@@ -548,11 +624,11 @@ function Pane({ active, onRun }) {
         </label>
       </div>
     ),
-    translate: (<label>To <input type="text" value={opts.lang} onChange={e=>setOpts({ ...opts, lang: e.target.value })}/></label>),
-    proofread: (<span style={{opacity:.8}}>Proofread has no options</span>),
+    translate: (<label>To <input type="text" value={opts.lang} onChange={e => setOpts({ ...opts, lang: e.target.value })} placeholder="e.g. fr, es, de, bn" /></label>),
+    proofread: (<span style={{ opacity: .8 }}>Checks grammar, spelling &amp; punctuation</span>),
     rewrite: (
       <label>Mode
-        <select value={opts.mode} onChange={e=>setOpts({ ...opts, mode: e.target.value })}>
+        <select value={opts.mode} onChange={e => setOpts({ ...opts, mode: e.target.value })}>
           <option value="key-points">Key points</option>
           <option value="paragraph">New paragraph</option>
           <option value="table">Table</option>
@@ -564,7 +640,7 @@ function Pane({ active, onRun }) {
     ),
     write: (
       <label>Tone
-        <select value={opts.tone} onChange={e=>setOpts({ ...opts, tone: e.target.value })}>
+        <select value={opts.tone} onChange={e => setOpts({ ...opts, tone: e.target.value })}>
           <option value="formal">Formal</option>
           <option value="neutral">Neutral</option>
           <option value="casual">Casual</option>
@@ -582,14 +658,16 @@ function Pane({ active, onRun }) {
 
   return (
     <div className="fai-pane">
-      <textarea className="fai-input"
+      <textarea
+        className="fai-input"
         ref={taRef}
-        placeholder={active === "write" ? "Describe what to write..." : "Write or paste text here…"}
-        disabled={busy} />
+        placeholder={active === "write" ? "Describe what to write…" : "Write or paste text here…"}
+        disabled={busy}
+      />
       <div className="fai-controls">
         <div className="options">{OptsUI}</div>
         <button className="runbtn" onClick={run} disabled={busy} aria-label={`Run ${active}`}>
-          {busy ? "⏳ Processing..." : "Run"}
+          {busy ? "⏳ Processing…" : "Run"}
         </button>
       </div>
     </div>
