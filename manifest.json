@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "CreaText",
-  "description": "AI-powered text tools: summarize, translate, proofread, rewrite, and write — powered by Gemini.",
+  "description": "AI-powered text tools with Accuracy (Gemini) and Speed (Groq) modes.",
   "version": "1.0.0",
   "action": { "default_popup": "src/popup.html" },
   "background": { "service_worker": "src/bg.js", "type": "module" },

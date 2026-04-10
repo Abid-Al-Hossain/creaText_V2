@@ -518,6 +518,36 @@
 }
 
 /* ===================== STATUS BAR ===================== */
+.fai-fallback-banner {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--fai-accent-strong);
+  background: color-mix(in srgb, var(--fai-accent) 10%, var(--fai-surface));
+  color: var(--fai-text);
+  font: 500 11px/1.4 var(--fai-font);
+  z-index: 2;
+}
+.fai-fallback-btn {
+  flex-shrink: 0;
+  border: 1px solid var(--fai-accent-strong);
+  background: var(--fai-accent-soft);
+  color: var(--fai-text);
+  border-radius: 8px;
+  padding: 5px 9px;
+  cursor: pointer;
+  font: 600 11px var(--fai-font);
+}
+.fai-fallback-btn:hover {
+  background: color-mix(in srgb, var(--fai-accent) 18%, var(--fai-surface));
+}
 .fai-status {
   position: absolute; left: 12px; bottom: 12px;
   font: 500 11px var(--fai-font);
@@ -598,6 +628,12 @@
 .fai-settings-section {
   padding-bottom: 16px;
 }
+.fai-settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
 .fai-settings-section-title {
   font: 600 11px var(--fai-font);
   letter-spacing: .8px;
@@ -615,6 +651,39 @@
   display: flex;
   align-items: center;
   gap: 10px;
+}
+.fai-quota-card {
+  border: 1px solid var(--fai-border);
+  background: var(--fai-field-bg);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.fai-quota-title {
+  font: 600 12px var(--fai-font);
+  color: var(--fai-text);
+  margin-bottom: 10px;
+}
+.fai-quota-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.fai-quota-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.fai-quota-label {
+  font: 500 11px var(--fai-font);
+  color: var(--fai-text-muted);
+}
+.fai-quota-value {
+  font: 600 12px var(--fai-font);
+  color: var(--fai-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .fai-settings-label {
   font: 500 12px var(--fai-font);

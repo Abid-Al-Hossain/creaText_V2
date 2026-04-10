@@ -1,4 +1,4 @@
-import { handleAiMessage } from "./geminiService";
+import { handleAiMessage } from "./aiService";
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get(["enabled"], (store) => {

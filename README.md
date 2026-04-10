@@ -1,6 +1,6 @@
 # CreaText V2
 
-> A powerful, privacy-respecting AI text toolkit for Chrome — powered by Google Gemini 2.5 Flash.
+> A powerful, privacy-respecting AI text toolkit for Chrome with Accuracy (Gemini) and Speed (Groq) modes.
 
 [![Manifest Version](https://img.shields.io/badge/Manifest-V3-blue?style=flat-square)](https://developer.chrome.com/docs/extensions/mv3/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react)](https://react.dev/)
@@ -31,9 +31,12 @@
 
 ## Overview
 
-**CreaText V2** is a Chrome extension that injects a floating, draggable AI text-tool panel into any web page. It provides five core AI-powered writing utilities — **Summarize**, **Translate**, **Proofread**, **Rewrite**, and **Write** — all driven by Google's **Gemini 2.5 Flash** API.
+**CreaText V2** is a Chrome extension that injects a floating, draggable AI text-tool panel into any web page. It provides five core AI-powered writing utilities — **Summarize**, **Translate**, **Proofread**, **Rewrite**, and **Write** — with a simple provider mode switch:
 
-Unlike extensions that embed a shared API key (and expose it to all users), CreaText V2 requires each user to supply their own **free** Gemini API key from [Google AI Studio](https://aistudio.google.com/app/apikey). This approach ensures:
+- **Accuracy** → **Gemini 2.5 Flash**
+- **Speed** → **Groq** (`openai/gpt-oss-20b` by default, user-selectable)
+
+Unlike extensions that embed a shared API key (and expose it to all users), CreaText V2 requires each user to supply their own API key for the provider they want to use. Gemini keys come from [Google AI Studio](https://aistudio.google.com/app/apikey), and Groq keys come from the [Groq API keys page](https://console.groq.com/keys). This approach ensures:
 
 - **No shared cost** — every user operates within their own free quota (1,500 requests/day)
 - **No data leakage** — your API key and text never pass through any third-party server
@@ -53,7 +56,11 @@ Unlike extensions that embed a shared API key (and expose it to all users), Crea
 | 📋 **Copy** | One-click copy of any result to the clipboard |
 | 🎨 **Themes** | Six built-in themes + fully customizable colors |
 | 📐 **Resizable Panel** | Drag to move, drag the corner to resize |
-| 🔑 **API Key Management** | Secure local storage of your Gemini API key with show/hide toggle |
+| ⚖️ **Provider Mode** | Switch between **Accuracy** (Gemini) and **Speed** (Groq) |
+| 🧠 **Accuracy Models** | Choose **Gemini 2.5 Flash**, **Gemini 2.5 Pro**, or **Gemini 3 Flash Preview** on the free tier |
+| 🚀 **Speed Models** | Choose **GPT-OSS 20B**, **GPT-OSS 120B**, or **Llama 4 Scout** with model-specific notes |
+| 📊 **Groq Quota View** | Shows raw Groq rate-limit header snapshots for request/token quotas without inferred countdowns |
+| 🔑 **API Key Management** | Secure local storage of separate Gemini and Groq API keys with show/hide toggle |
 
 ---
 
@@ -66,7 +73,7 @@ User Input (content.jsx)
         │
         ▼
  aiBuiltins.js
- fetch() → Gemini 2.5 Flash REST API
+ service worker provider router
         │
         ▼
    Result → UI (content.jsx)
@@ -74,9 +81,9 @@ User Input (content.jsx)
 
 **Key design decisions:**
 - The injected UI is rendered inside a **Shadow DOM** root so hostile page CSS cannot break the extension layout
-- All AI calls are routed through the extension service worker so Gemini requests run in a trusted extension context instead of the page-bound content script
-- The service worker now handles Gemini request execution, API-key access, and proofread structured-output parsing
-- Each user's API key is stored exclusively in `chrome.storage.local` on their own device — never transmitted to any server other than Google's API
+- All AI calls are routed through the extension service worker so provider requests run in a trusted extension context instead of the page-bound content script
+- The service worker handles Gemini/Groq request execution, per-provider API-key access, provider-mode routing, and proofread structured-output parsing
+- Each user's API keys are stored exclusively in `chrome.storage.local` on their own device — never transmitted to any server other than the selected provider API
 
 ---
 
@@ -84,7 +91,7 @@ User Input (content.jsx)
 
 - **Google Chrome** 120 or later (Manifest V3 support required)
 - **Node.js** 18 or later + npm (for building from source)
-- A **free Google account** (for obtaining a Gemini API key)
+- A **free Google account** for Gemini and/or a **Groq account** for Groq
 
 ---
 
@@ -130,12 +137,20 @@ Then load the `dist/` directory as an unpacked extension as described above. The
 
 ## Getting Your Free API Key
 
-CreaText V2 requires a **Google Gemini API key**, which is completely free to obtain:
+CreaText V2 supports two provider modes:
+
+### Accuracy mode → Gemini
 
 1. Visit [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
 2. Sign in with your Google account
 3. Click **Create API key**
 4. Copy the generated key
+
+### Speed mode → Groq
+
+1. Visit [console.groq.com/keys](https://console.groq.com/keys)
+2. Sign in, create or select a project, and generate a project API key
+3. Copy the generated key
 
 **Free tier limits (as of April 2026):**
 - 15 requests per minute (RPM)
@@ -147,10 +162,11 @@ These limits are more than sufficient for personal use of a text tool extension.
 Once you have your key:
 1. Click the **CT** bubble on any web page
 2. Open **⚙️ Settings**
-3. Paste your key into the **Gemini API Key** field
-4. Click **Save**
+3. Choose **Accuracy** or **Speed** in **AI Connection**
+4. Paste the matching provider key into the visible field
+5. Click **Save**
 
-The key is stored locally in `chrome.storage.local` and persists across browser sessions.
+Each provider key is stored locally in `chrome.storage.local` and persists across browser sessions.
 
 ---
 
@@ -223,7 +239,7 @@ creaText_V2/
 │   └── service-worker-loader.js # crxjs bootstrap shim
 │
 ├── src/                         # Source files
-│   ├── aiBuiltins.js            # Gemini API integration (all AI features)
+│   ├── aiBuiltins.js            # Content-side AI message wrapper
 │   ├── bg.js                    # Service worker (minimal)
 │   ├── content.jsx              # Main React app (UI, drag, resize, settings)
 │   ├── offscreen.html           # Stub (unused)
@@ -241,15 +257,15 @@ creaText_V2/
 ### Key Source Files
 
 #### `src/aiBuiltins.js`
-Thin client-side wrapper that forwards AI operations (`summarize`, `translate`, `proofread`, `rewrite`, `write`) plus `getApiKey` / `saveApiKey` to the service worker via `chrome.runtime.sendMessage`.
+Thin client-side wrapper that forwards AI operations (`summarize`, `translate`, `proofread`, `rewrite`, `write`) plus provider-key settings reads/writes to the service worker via `chrome.runtime.sendMessage`.
 
-#### `src/geminiService.js`
-The Gemini backend that runs inside the service worker. Handles API-key access, request execution, structured proofread output, and Gemini response validation.
+#### `src/aiService.js`
+The provider-aware backend that runs inside the service worker. Handles Gemini/Groq request execution, API-key access, provider-mode routing, and structured proofread parsing.
 
 #### `src/content.jsx`
 The main React 19 application. Mounts itself into a **Shadow DOM** host attached to `document.documentElement` so the widget survives SPA navigation and remains isolated from host-page CSS. Contains:
 - `App` — root component managing state, drag, resize
-- `Settings` — theme presets, custom colors, API key UI, feature toggles
+- `Settings` — provider mode, Gemini/Groq model selectors, raw Groq quota snapshot, theme presets, custom colors, feature toggles
 - `Pane` — per-feature input and options, with draft preservation across tool switches
 - `ResultCard` — result display with copy button
 - `ColorModal` — live-preview color picker
@@ -268,7 +284,8 @@ CSS custom properties-based design system. Theme presets are applied via CSS cla
 | [Vite](https://vite.dev/) | 7.x | Build tool |
 | [@crxjs/vite-plugin](https://crxjs.dev/) | 2.x | Chrome extension build pipeline |
 | [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react) | 5.x | React/JSX transform |
-| [Gemini 2.5 Flash API](https://ai.google.dev/) | v1beta | AI backend |
+| [Gemini API](https://ai.google.dev/) | v1beta | Accuracy-mode backend |
+| [Groq API](https://console.groq.com/keys) | OpenAI-compatible | Speed-mode backend |
 
 ---
 
@@ -315,11 +332,11 @@ All theming is implemented via **CSS custom properties** (`--fai-bg`, `--fai-sur
 
 ## Privacy & Security
 
-- **Your API key never leaves your device** — it is stored only in `chrome.storage.local` and sent exclusively to `generativelanguage.googleapis.com` (Google's official API endpoint)
-- **No analytics, no telemetry, no third-party servers** — CreaText V2 makes exactly one type of external request: to the Gemini API
+- **Your API keys never leave your device** — they are stored only in `chrome.storage.local` and sent exclusively to the selected provider API (`generativelanguage.googleapis.com` for Gemini or `api.groq.com` for Groq)
+- **No analytics, no telemetry, no third-party servers** — CreaText V2 only contacts the model provider selected by the user
 - **No shared backend** — each user authenticates with their own free API key; there is no central server or shared quota
 - **Content script isolation** — the widget mounts inside a Shadow DOM host attached to the page root, sharply reducing interference from host-page CSS
-- **Trusted request path** — Gemini network requests run from the extension service worker rather than directly from the content script
+- **Trusted request path** — provider network requests run from the extension service worker rather than directly from the content script
 - **Permissions used:**
   - `storage` — persists API key, position, theme, and feature preferences
   - `activeTab` — allows the popup to detect the active tab
@@ -332,8 +349,9 @@ All theming is implemented via **CSS custom properties** (`--fai-bg`, `--fai-sur
 
 - **Chrome only** — Manifest V3 with the `chrome.*` API is Chrome-specific; Firefox and other browsers are not supported
 - **HTTPS pages only** — the extension does not inject into `chrome://`, `file://`, or extension pages
-- **API rate limits** — the free Gemini API tier allows 1,500 requests/day and 15 RPM; heavy usage may encounter rate limiting (HTTP 429)
-- **Context window** — Gemini 2.5 Flash supports a 1M token context window; practical text inputs are well within this limit
+- **API rate limits** — free-tier limits depend on the selected provider account; heavy usage may encounter HTTP 429 responses
+- **Model behavior** — Accuracy mode prioritizes writing quality, while Speed mode prioritizes faster turnaround over best-in-class output quality
+- **Groq quota display** — the extension only shows raw Groq header snapshots; it does not infer synchronized reset timing or exact future availability
 
 ---
 
@@ -358,7 +376,9 @@ This project is licensed under the **ISC License**. See [LICENSE](./LICENSE) for
 ---
 
 <div align="center">
-  <sub>Built with ❤️ using React 19 + Gemini 2.5 Flash</sub>
+  <sub>Built with React 19 + Gemini + Groq</sub>
 </div>
+
+
 
 

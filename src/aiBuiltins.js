@@ -14,12 +14,12 @@ function sendAiMessage(message) {
   });
 }
 
-export function getApiKey() {
-  return sendAiMessage({ type: "__ai_get_api_key__" });
+export function getAiSettings() {
+  return sendAiMessage({ type: "__ai_get_settings__" });
 }
 
-export function saveApiKey(key) {
-  return sendAiMessage({ type: "__ai_save_api_key__", value: key });
+export function saveAiSettings(value) {
+  return sendAiMessage({ type: "__ai_save_settings__", value });
 }
 
 export function summarize(text, options = {}) {
