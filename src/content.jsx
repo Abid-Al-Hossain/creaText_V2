@@ -1,5 +1,5 @@
 // src/content.jsx
-import "./style.css";
+import stylesText from "./style.css?inline";
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import { AnimatePresence, motion } from "framer-motion";
@@ -267,7 +267,12 @@ function App() {
     setResults([]);
     try {
       let result = "";
-      if      (op === "summarize") { result = await summarize(text, opts); }
+      if      (op === "summarize") {
+        const summaryOpts = opts.summaryMode === "length"
+          ? { length: opts.length }
+          : { words: opts.words };
+        result = await summarize(text, summaryOpts);
+      }
       else if (op === "translate") { result = await translate(text, { to: opts.lang || "en" }); }
       else if (op === "proofread") {
         const res = await proofread(text);
@@ -577,7 +582,14 @@ function Settings({ theme, setTheme, preset, setPreset, bubble, features, setFea
 /* ------------ Pane ------------ */
 function Pane({ active, onRun }) {
   const taRef = useRef(null);
-  const [opts, setOpts] = useState({ words: 120, length: "medium", lang: "en", tone: "neutral", mode: "paragraph" });
+  const [opts, setOpts] = useState({
+    summaryMode: "words",
+    words: 120,
+    length: "medium",
+    lang: "en",
+    tone: "neutral",
+    mode: "paragraph",
+  });
   const [busy, setBusy] = useState(false);
 
   const run = async () => {
@@ -589,22 +601,40 @@ function Pane({ active, onRun }) {
   const OptsUI = {
     summarize: (
       <div className="fai-opts-group">
-        <label className="fai-opt-label">
-          Words
-          <input type="number" className="fai-opt-input fai-opt-input--num"
-            min="30" max="800" value={opts.words}
-            onChange={e => setOpts({ ...opts, words: Number(e.target.value) })} />
-        </label>
-        <span className="fai-opts-sep">or</span>
-        <label className="fai-opt-label">
-          Length
-          <select className="fai-select fai-opt-select" value={opts.length}
-            onChange={e => setOpts({ ...opts, length: e.target.value })}>
-            <option value="short">Short</option>
-            <option value="medium">Medium</option>
-            <option value="long">Long</option>
-          </select>
-        </label>
+        <div className="fai-segment" role="tablist" aria-label="Summarize mode">
+          <button
+            type="button"
+            className={`fai-segment-btn${opts.summaryMode === "words" ? " active" : ""}`}
+            aria-pressed={opts.summaryMode === "words"}
+            onClick={() => setOpts({ ...opts, summaryMode: "words" })}>
+            By words
+          </button>
+          <button
+            type="button"
+            className={`fai-segment-btn${opts.summaryMode === "length" ? " active" : ""}`}
+            aria-pressed={opts.summaryMode === "length"}
+            onClick={() => setOpts({ ...opts, summaryMode: "length" })}>
+            By length
+          </button>
+        </div>
+        {opts.summaryMode === "words" ? (
+          <label className="fai-opt-label">
+            Target words
+            <input type="number" className="fai-opt-input fai-opt-input--num"
+              min="30" max="800" value={opts.words}
+              onChange={e => setOpts({ ...opts, words: Number(e.target.value) || 30 })} />
+          </label>
+        ) : (
+          <label className="fai-opt-label">
+            Length
+            <select className="fai-select fai-opt-select" value={opts.length}
+              onChange={e => setOpts({ ...opts, length: e.target.value })}>
+              <option value="short">Short</option>
+              <option value="medium">Medium</option>
+              <option value="long">Long</option>
+            </select>
+          </label>
+        )}
       </div>
     ),
     translate: (
@@ -673,8 +703,17 @@ function Pane({ active, onRun }) {
 (() => {
   const id = "fai-root-mount";
   if (document.getElementById(id)) return;
+  const host = document.createElement("div");
+  host.id = id;
+
+  const shadow = host.attachShadow({ mode: "open" });
+  const style = document.createElement("style");
+  style.textContent = stylesText;
+
   const mount = document.createElement("div");
-  mount.id = id;
-  document.documentElement.appendChild(mount);
+  mount.className = "fai-root";
+
+  shadow.append(style, mount);
+  document.documentElement.appendChild(host);
   createRoot(mount).render(<App />);
 })();

@@ -73,6 +73,7 @@ User Input (content.jsx)
 ```
 
 **Key design decisions:**
+- The injected UI is rendered inside a **Shadow DOM** root so hostile page CSS cannot break the extension layout
 - All AI calls are made directly from the content script via `fetch()` to the Gemini REST API — no service worker proxy, no offscreen document, no page bridge injection
 - The service worker (`bg.js`) is intentionally minimal (~5 lines) since no background processing is needed
 - Each user's API key is stored exclusively in `chrome.storage.local` on their own device — never transmitted to any server other than Google's API
@@ -165,7 +166,7 @@ The key is stored locally in `chrome.storage.local` and persists across browser 
 
 1. Select **Summarize** from the sidebar
 2. Paste or type the text you want summarized
-3. Choose a **word count** (e.g. `120`) or a **length preset** (Short / Medium / Long)
+3. Choose either **By words** (e.g. `120`) or **By length** (Short / Medium / Long)
 4. Click **Run**
 
 ### Translate
@@ -243,7 +244,7 @@ creaText_V2/
 The entire AI backend in a single file. Exports five async functions (`summarize`, `translate`, `proofread`, `rewrite`, `write`) plus `getApiKey` / `saveApiKey` for key management. All functions call the Gemini 2.5 Flash REST API via `fetch()`.
 
 #### `src/content.jsx`
-The main React 19 application. Mounts itself into `document.documentElement` (outside `<body>`) to survive SPA navigation and DOM resets. Contains:
+The main React 19 application. Mounts itself into a **Shadow DOM** host attached to `document.documentElement` so the widget survives SPA navigation and remains isolated from host-page CSS. Contains:
 - `App` — root component managing state, drag, resize
 - `Settings` — theme presets, custom colors, API key UI, feature toggles
 - `Pane` — per-feature input and options
@@ -251,7 +252,7 @@ The main React 19 application. Mounts itself into `document.documentElement` (ou
 - `ColorModal` — live-preview color picker
 
 #### `src/style.css`
-CSS custom properties-based design system. Theme presets are applied via CSS classes (`.theme-ocean`, `.theme-forest`, etc.) on the root element. Isolation is achieved via `all: revert` on the root widget elements to prevent host-page style bleed.
+CSS custom properties-based design system. Theme presets are applied via CSS classes (`.theme-ocean`, `.theme-forest`, etc.) on the root element, and the stylesheet is injected into the widget's Shadow DOM so page styles cannot override the extension UI.
 
 ---
 
@@ -314,7 +315,7 @@ All theming is implemented via **CSS custom properties** (`--fai-bg`, `--fai-sur
 - **Your API key never leaves your device** — it is stored only in `chrome.storage.local` and sent exclusively to `generativelanguage.googleapis.com` (Google's official API endpoint)
 - **No analytics, no telemetry, no third-party servers** — CreaText V2 makes exactly one type of external request: to the Gemini API
 - **No shared backend** — each user authenticates with their own free API key; there is no central server or shared quota
-- **Content script isolation** — the widget uses `all: revert` CSS isolation and mounts outside the page `<body>` to avoid interfering with host-page functionality
+- **Content script isolation** — the widget mounts inside a Shadow DOM host attached to the page root, sharply reducing interference from host-page CSS
 - **Permissions used:**
   - `storage` — persists API key, position, theme, and feature preferences
   - `activeTab` — allows the popup to detect the active tab
