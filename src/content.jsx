@@ -14,7 +14,16 @@ const defaultTheme = {
   bg: "", border: "", accent: "", text: "", bubble: 46,
   bgRaw: "", borderRaw: "", accentRaw: "", textRaw: ""
 };
-const defaultFeatures = { summarize: true, translate: true, proofread: true, rewrite: true, write: false };
+const defaultFeatures = { summarize: true, translate: true, proofread: true, rewrite: true, write: true };
+const defaultPaneState = {
+  summarize: { input: "", opts: { summaryMode: "words", words: 120, length: "medium" } },
+  translate: { input: "", opts: { lang: "en" } },
+  proofread: { input: "", opts: {} },
+  rewrite: { input: "", opts: { mode: "paragraph" } },
+  write: { input: "", opts: { tone: "neutral" } },
+};
+const MIN_DRAWER_WIDTH = 560;
+const MIN_DRAWER_HEIGHT = 400;
 
 const THEME_PRESETS = {
   default:  { bg: "rgba(13,17,28,.98)",    border: "rgba(255,255,255,.09)", accent: "#818cf8", text: "#e2e8f0" },
@@ -40,10 +49,16 @@ const SPRING_SOFT   = { type: "spring", stiffness: 220, damping: 22 };
 /* ------------ Storage hook ------------ */
 function useStorage(key, initial) {
   const [val, setVal] = useState(initial);
+  const [ready, setReady] = useState(false);
   useEffect(() => {
     try {
-      chrome.storage.local.get({ [key]: initial }, s => setVal(s[key]));
-    } catch { /* Context invalid */ }
+      chrome.storage.local.get({ [key]: initial }, s => {
+        setVal(s[key]);
+        setReady(true);
+      });
+    } catch {
+      setReady(true);
+    }
   }, [key]);
   useEffect(() => {
     const l = (c) => { if (key in c) setVal(c[key].newValue); };
@@ -53,12 +68,30 @@ function useStorage(key, initial) {
     } catch { return () => {}; }
   }, [key]);
   const save = useCallback((next) => chrome.storage.local.set({ [key]: next }), [key]);
-  return [val, save];
+  return [val, save, ready];
 }
 
 /* ------------ Helpers ------------ */
 function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
 function isColorLike(s) { return /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(s) || /^rgb/i.test(s) || /^hsl/i.test(s); }
+function getTextColorScheme(color) {
+  if (!color) return "dark";
+  const probe = document.createElement("span");
+  probe.style.color = color;
+  probe.style.display = "none";
+  document.documentElement.appendChild(probe);
+  const computed = getComputedStyle(probe).color;
+  probe.remove();
+
+  const rgb = computed.match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+  if (!rgb) return "dark";
+
+  const r = Number(rgb[1]);
+  const g = Number(rgb[2]);
+  const b = Number(rgb[3]);
+  const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+  return luminance > 0.55 ? "light" : "dark";
+}
 async function copyToClipboard(text) {
   try { await navigator.clipboard.writeText(text); return true; } catch { return false; }
 }
@@ -145,7 +178,7 @@ function ResultCard({ text }) {
 
 /* ------------ App ------------ */
 function App() {
-  const [enabled, setEnabled] = useStorage("enabled", true);
+  const [enabled, setEnabled, enabledReady] = useStorage("enabled", true);
   const [pos, setPos]         = useStorage("fai_pos", defaultPos);
   const [theme, setTheme]     = useStorage("fai_theme", defaultTheme);
   const [features, setFeatures] = useStorage("fai_features", defaultFeatures);
@@ -156,15 +189,22 @@ function App() {
   const [status, setStatus]           = useState({ text: "", loading: false });
   const [results, setResults]         = useState([]);
   const [showSettings, setShowSettings] = useState(false);
-  const [paneKey, setPaneKey]         = useState(1);
+  const [drafts, setDrafts]           = useState(defaultPaneState);
 
   const setStatusMsg = (text, loading = false) => setStatus({ text, loading });
+  const drawerRef = useRef(null);
+  const runTokenRef = useRef(0);
+  const activeRef = useRef(active);
+  const showSettingsRef = useRef(showSettings);
+
+  useEffect(() => { activeRef.current = active; }, [active]);
+  useEffect(() => { showSettingsRef.current = showSettings; }, [showSettings]);
 
   useEffect(() => {
     const handler = (msg) => {
       if (msg?.type === "__toggle__")        setEnabled(msg.enabled);
-      if (msg?.type === "__open__")          { setEnabled(true); setOpen(true); }
-      if (msg?.type === "__open_settings__") { setEnabled(true); setOpen(true); setShowSettings(true); }
+      if (msg?.type === "__open__")          { setEnabled(true); setOpen(true); runTokenRef.current += 1; }
+      if (msg?.type === "__open_settings__") { setEnabled(true); setOpen(true); setShowSettings(true); runTokenRef.current += 1; }
     };
     try {
       chrome.runtime.onMessage.addListener(handler);
@@ -174,25 +214,93 @@ function App() {
     }
   }, [setEnabled]);
 
+  useEffect(() => {
+    const merged = { ...defaultFeatures, ...features };
+    const isLegacyDefault =
+      features.summarize === true &&
+      features.translate === true &&
+      features.proofread === true &&
+      features.rewrite === true &&
+      features.write === false;
+
+    if (isLegacyDefault || Object.keys(defaultFeatures).some((key) => typeof features[key] !== "boolean")) {
+      setFeatures({ ...merged, write: true });
+    }
+  }, [features, setFeatures]);
+
+  useEffect(() => {
+    const enabledKeys = Object.keys(features).filter((key) => features[key]);
+    if (!enabledKeys.length) {
+      setFeatures(defaultFeatures);
+      return;
+    }
+    if (!enabledKeys.includes(active)) setActive(enabledKeys[0]);
+  }, [active, features, setFeatures]);
+
   const varStyle = (() => {
     if (preset === "custom") {
       const bg     = theme.bg     || THEME_PRESETS.default.bg;
       const border = theme.border || THEME_PRESETS.default.border;
       const accent = theme.accent || THEME_PRESETS.default.accent;
       const text   = theme.text   || THEME_PRESETS.default.text;
+      const scheme = getTextColorScheme(text);
+      const contrast = scheme === "light" ? "black" : "white";
+      const surface = `color-mix(in srgb, ${bg} 92%, ${contrast} 8%)`;
+      const surfaceCtrl = `color-mix(in srgb, ${bg} 86%, ${contrast} 14%)`;
       return {
-        "--fai-bg": bg, "--fai-surface": bg,
+        "--fai-bg": bg,
+        "--fai-surface": surface,
+        "--fai-surface-ctrl": surfaceCtrl,
+        "--fai-surface-hi": `color-mix(in srgb, ${accent} 10%, transparent)`,
         "--fai-border": border, "--fai-accent": accent, "--fai-text": text,
+        "--fai-border-hi": `color-mix(in srgb, ${border} 72%, ${text} 28%)`,
+        "--fai-text-muted": `color-mix(in srgb, ${text} 56%, transparent)`,
+        "--fai-sidebar-bg": `color-mix(in srgb, ${bg} 90%, ${contrast} 10%)`,
+        "--fai-menu-bg": surfaceCtrl,
+        "--fai-menu-hover": `color-mix(in srgb, ${accent} 18%, transparent)`,
+        "--fai-color-scheme": scheme,
+        "--fai-shadow": scheme === "light"
+          ? "0 20px 52px rgba(44, 26, 84, .18), 0 4px 16px rgba(44, 26, 84, .12)"
+          : "0 24px 64px rgba(0,0,0,.55), 0 4px 16px rgba(0,0,0,.35)",
         "--fai-bubble-size": `${Number(theme.bubble) || 46}px`,
       };
     }
-    return { "--fai-bubble-size": `${Number(theme.bubble) || 46}px` };
+    const presetScheme = ["sunrise", "lavender"].includes(preset) ? "light" : "dark";
+    return {
+      "--fai-color-scheme": presetScheme,
+      "--fai-bubble-size": `${Number(theme.bubble) || 46}px`
+    };
   })();
 
   /* --- Drag --- */
   const dragState = useRef(null);
   const posRef = useRef(pos);
   useEffect(() => { posRef.current = pos; }, [pos]);
+
+  useEffect(() => {
+    const clampToViewport = () => {
+      if (!open) return;
+      const p = posRef.current;
+      const maxWidth = Math.max(240, window.innerWidth - 16);
+      const maxHeight = Math.max(220, window.innerHeight - 16);
+      const minWidth = Math.min(MIN_DRAWER_WIDTH, maxWidth);
+      const minHeight = Math.min(MIN_DRAWER_HEIGHT, maxHeight);
+      const width = clamp(p.width || 720, minWidth, maxWidth);
+      const height = clamp(p.height || 580, minHeight, maxHeight);
+      const baseLeft = p.left ?? (window.innerWidth - width - (p.right ?? 24));
+      const baseTop = p.top ?? (window.innerHeight - height - (p.bottom ?? 24));
+      const left = clamp(baseLeft, 8, Math.max(8, window.innerWidth - width - 8));
+      const top = clamp(baseTop, 8, Math.max(8, window.innerHeight - height - 8));
+
+      if (left !== p.left || top !== p.top || width !== p.width || height !== p.height || p.right !== null || p.bottom !== null) {
+        setPos({ ...p, left, top, right: null, bottom: null, width, height });
+      }
+    };
+
+    clampToViewport();
+    window.addEventListener("resize", clampToViewport);
+    return () => window.removeEventListener("resize", clampToViewport);
+  }, [open, setPos]);
 
   const onDragStart = (e) => {
     if (e.target.closest(".fai-actions")) return;
@@ -230,11 +338,16 @@ function App() {
 
   /* --- Resize --- */
   const resizeState = useRef(null);
-  const onResizeStart = (e) => {
+  const onResizeStart = (dir) => (e) => {
     e.stopPropagation();
-    const p = posRef.current;
+    const rect = drawerRef.current?.getBoundingClientRect();
+    if (!rect) return;
     resizeState.current = {
-      startWidth: p.width || 720, startHeight: p.height || 580,
+      dir,
+      startLeft: rect.left,
+      startTop: rect.top,
+      startWidth: rect.width,
+      startHeight: rect.height,
       startX: e.clientX, startY: e.clientY,
     };
     window.addEventListener("pointermove", onResizing);
@@ -242,11 +355,40 @@ function App() {
   };
   const onResizing = (e) => {
     if (!resizeState.current) return;
-    const dx = e.clientX - resizeState.current.startX;
-    const dy = e.clientY - resizeState.current.startY;
-    setPos({ ...posRef.current,
-      width:  Math.max(560, resizeState.current.startWidth  + dx),
-      height: Math.max(400, resizeState.current.startHeight + dy),
+    const { dir, startLeft, startTop, startWidth, startHeight, startX, startY } = resizeState.current;
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+    const viewportMinWidth = Math.min(MIN_DRAWER_WIDTH, Math.max(240, window.innerWidth - 16));
+    const viewportMinHeight = Math.min(MIN_DRAWER_HEIGHT, Math.max(220, window.innerHeight - 16));
+
+    let left = startLeft;
+    let top = startTop;
+    let width = startWidth;
+    let height = startHeight;
+
+    if (dir.includes("e")) {
+      width = clamp(startWidth + dx, viewportMinWidth, window.innerWidth - startLeft - 8);
+    }
+    if (dir.includes("s")) {
+      height = clamp(startHeight + dy, viewportMinHeight, window.innerHeight - startTop - 8);
+    }
+    if (dir.includes("w")) {
+      left = clamp(startLeft + dx, 8, startLeft + startWidth - viewportMinWidth);
+      width = startWidth - (left - startLeft);
+    }
+    if (dir.includes("n")) {
+      top = clamp(startTop + dy, 8, startTop + startHeight - viewportMinHeight);
+      height = startHeight - (top - startTop);
+    }
+
+    setPos({
+      ...posRef.current,
+      left,
+      top,
+      right: null,
+      bottom: null,
+      width,
+      height,
     });
   };
   const onResizeEnd = () => {
@@ -259,9 +401,24 @@ function App() {
   const presetClass = (preset && preset !== "custom" && preset !== "default") ? `theme-${preset}` : "";
   const activeMeta  = FEATURES_META[active] || {};
 
+  const updateDraft = useCallback((tool, next) => {
+    setDrafts((prev) => ({
+      ...prev,
+      [tool]: {
+        ...prev[tool],
+        ...next,
+        opts: {
+          ...prev[tool]?.opts,
+          ...(next.opts || {}),
+        },
+      },
+    }));
+  }, []);
+
   /* --- Run AI --- */
   const runOp = async (op, text, opts) => {
     if (!text?.trim()) { setStatusMsg("⚠️ Please enter some text."); setTimeout(() => setStatusMsg(""), 2000); return; }
+    const token = ++runTokenRef.current;
     const labels = { summarize: "Summarizing", translate: "Translating", proofread: "Proofreading", rewrite: "Rewriting", write: "Writing" };
     setStatusMsg(`${labels[op] || "Processing"}…`, true);
     setResults([]);
@@ -284,10 +441,12 @@ function App() {
       else if (op === "rewrite") { result = await rewrite(text, opts.mode || "paragraph"); }
       else if (op === "write")   { result = await write(text, { tone: opts.tone || "neutral" }); }
 
+      if (token !== runTokenRef.current || activeRef.current !== op || showSettingsRef.current) return;
       setResults([{ id: Date.now(), text: result }]);
       setStatusMsg("✅ Done!");
       setTimeout(() => setStatusMsg(""), 3000);
     } catch (err) {
+      if (token !== runTokenRef.current || activeRef.current !== op || showSettingsRef.current) return;
       if (err.message === "NO_API_KEY") {
         setStatusMsg("🔑 Add your Gemini API key in ⚙️ Settings.");
         setTimeout(() => setStatusMsg(""), 6000);
@@ -298,7 +457,7 @@ function App() {
     }
   };
 
-  return !enabled ? null : (
+  return !enabledReady || !enabled ? null : (
     <AnimatePresence mode="wait">
       {!open ? (
         <motion.div key="bubble"
@@ -316,6 +475,7 @@ function App() {
         </motion.div>
       ) : (
         <motion.div key="drawer"
+          ref={drawerRef}
           className={`fai-drawer ${presetClass}`}
           initial={{ opacity: 0, scale: 0.96, y: 18 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -330,13 +490,21 @@ function App() {
               <div className="fai-title">CreaText</div>
               <div className="fai-actions">
                 <button className="fai-iconbtn" aria-label="Settings" title="Settings"
-                  onClick={() => setShowSettings(s => !s)}>
+                  onClick={() => {
+                    runTokenRef.current += 1;
+                    setStatusMsg("");
+                    setShowSettings(s => !s);
+                  }}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                     <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
                   </svg>
                 </button>
                 <button className="fai-iconbtn fai-iconbtn--close" aria-label="Close" title="Close"
-                  onClick={() => setOpen(false)}>
+                  onClick={() => {
+                    runTokenRef.current += 1;
+                    setStatusMsg("");
+                    setOpen(false);
+                  }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                     <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
                   </svg>
@@ -351,13 +519,15 @@ function App() {
                 return (
                   <button key={k}
                     className={`fai-nav-item${isActive ? " active" : ""}`}
-                    onClick={() => { setActive(k); setShowSettings(false); setPaneKey(p => p + 1); setResults([]); }}>
+                    onClick={() => {
+                      runTokenRef.current += 1;
+                      setStatusMsg("");
+                      setActive(k);
+                      setShowSettings(false);
+                      setResults([]);
+                    }}>
                     <span className="fai-nav-icon">{meta.icon}</span>
                     <span className="fai-nav-label">{meta.label}</span>
-                    {isActive && (
-                      <motion.span className="fai-nav-indicator" layoutId="nav-indicator"
-                        transition={SPRING_SNAPPY} />
-                    )}
                   </button>
                 );
               })}
@@ -385,8 +555,12 @@ function App() {
                     <div className="fai-feature-desc">{activeMeta.desc}</div>
                   </div>
                 </div>
-                <Pane key={paneKey} active={active}
-                  onRun={(input, opts) => runOp(active, input, opts)} />
+                <Pane
+                  active={active}
+                  draft={drafts[active] || defaultPaneState[active]}
+                  onDraftChange={(next) => updateDraft(active, next)}
+                  onRun={(input, opts) => runOp(active, input, opts)}
+                />
               </>
             )}
 
@@ -410,7 +584,14 @@ function App() {
               )}
             </AnimatePresence>
 
-            <div className="fai-resize" onPointerDown={onResizeStart} title="Resize" />
+            <div className="fai-resize-handle fai-resize-handle--n" onPointerDown={onResizeStart("n")} />
+            <div className="fai-resize-handle fai-resize-handle--e" onPointerDown={onResizeStart("e")} />
+            <div className="fai-resize-handle fai-resize-handle--s" onPointerDown={onResizeStart("s")} />
+            <div className="fai-resize-handle fai-resize-handle--w" onPointerDown={onResizeStart("w")} />
+            <div className="fai-resize-handle fai-resize-handle--ne" onPointerDown={onResizeStart("ne")} />
+            <div className="fai-resize-handle fai-resize-handle--nw" onPointerDown={onResizeStart("nw")} />
+            <div className="fai-resize-handle fai-resize-handle--se" onPointerDown={onResizeStart("se")} />
+            <div className="fai-resize-handle fai-resize-handle--sw" onPointerDown={onResizeStart("sw")} />
           </div>
         </motion.div>
       )}
@@ -426,6 +607,7 @@ function Settings({ theme, setTheme, preset, setPreset, bubble, features, setFea
   const [keySaved, setKeySaved]     = useState(false);
   const prevThemeRef = useRef(theme);
   const isCustom = preset === "custom";
+  const enabledCount = Object.values(features).filter(Boolean).length;
 
   useEffect(() => { getApiKey().then(k => setApiKey(k || "")); }, []);
 
@@ -445,11 +627,11 @@ function Settings({ theme, setTheme, preset, setPreset, bubble, features, setFea
 
   const onPresetChange = (name) => {
     if (name === "custom") {
-      const base = THEME_PRESETS.default;
-      setTheme({ ...theme, bg: base.bg, border: base.border, accent: base.accent, text: base.text,
-        bgRaw: base.bg, borderRaw: base.border, accentRaw: base.accent, textRaw: base.text });
-    } else {
-      setTheme({ ...theme, bg:"",border:"",accent:"",text:"",bgRaw:"",borderRaw:"",accentRaw:"",textRaw:"" });
+      if (!theme.bg && !theme.border && !theme.accent && !theme.text && !theme.bgRaw && !theme.borderRaw && !theme.accentRaw && !theme.textRaw) {
+        const base = THEME_PRESETS.default;
+        setTheme({ ...theme, bg: base.bg, border: base.border, accent: base.accent, text: base.text,
+          bgRaw: base.bg, borderRaw: base.border, accentRaw: base.accent, textRaw: base.text });
+      }
     }
     setPreset(name);
   };
@@ -569,6 +751,7 @@ function Settings({ theme, setTheme, preset, setPreset, bubble, features, setFea
           {Object.keys(features).map(key => (
             <label key={key} className="fai-toggle-item">
               <input type="checkbox" checked={!!features[key]}
+                disabled={enabledCount === 1 && !!features[key]}
                 onChange={e => setFeatures({ ...features, [key]: e.target.checked })} />
               <span>{FEATURES_META[key]?.icon || ""} {key[0].toUpperCase() + key.slice(1)}</span>
             </label>
@@ -580,28 +763,26 @@ function Settings({ theme, setTheme, preset, setPreset, bubble, features, setFea
 }
 
 /* ------------ Pane ------------ */
-function Pane({ active, onRun }) {
-  const taRef = useRef(null);
-  const [opts, setOpts] = useState({
-    summaryMode: "words",
-    words: 120,
-    length: "medium",
-    lang: "en",
-    tone: "neutral",
-    mode: "paragraph",
-  });
+function Pane({ active, draft, onDraftChange, onRun }) {
   const [busy, setBusy] = useState(false);
+  const input = draft?.input ?? "";
+  const opts = draft?.opts ?? defaultPaneState[active]?.opts ?? {};
+
+  const setOpts = (next) => onDraftChange({ opts: next });
 
   const run = async () => {
     setBusy(true);
-    await onRun(taRef.current.value, opts);
-    setBusy(false);
+    try {
+      await onRun(input, opts);
+    } finally {
+      setBusy(false);
+    }
   };
 
   const OptsUI = {
     summarize: (
       <div className="fai-opts-group">
-        <div className="fai-segment" role="tablist" aria-label="Summarize mode">
+        <div className="fai-segment" role="group" aria-label="Summarize mode">
           <button
             type="button"
             className={`fai-segment-btn${opts.summaryMode === "words" ? " active" : ""}`}
@@ -680,7 +861,8 @@ function Pane({ active, onRun }) {
       <div className="fai-opts-bar">{OptsUI}</div>
       <textarea
         className="fai-input"
-        ref={taRef}
+        value={input}
+        onChange={(e) => onDraftChange({ input: e.target.value })}
         placeholder={active === "write" ? "Describe what you want written…" : "Paste or type your text here…"}
         disabled={busy}
       />

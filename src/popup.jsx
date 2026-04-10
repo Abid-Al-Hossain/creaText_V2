@@ -58,7 +58,7 @@ function Popup() {
 
       {/* Enable toggle */}
       <div className="popup-row">
-        <span className="popup-row-label">Enable on this page</span>
+        <span className="popup-row-label">Enable extension</span>
         <label className="toggle-pill">
           <input type="checkbox" checked={enabled} onChange={e => update(e.target.checked)} />
           <span className="toggle-track" />

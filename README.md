@@ -74,8 +74,8 @@ User Input (content.jsx)
 
 **Key design decisions:**
 - The injected UI is rendered inside a **Shadow DOM** root so hostile page CSS cannot break the extension layout
-- All AI calls are made directly from the content script via `fetch()` to the Gemini REST API — no service worker proxy, no offscreen document, no page bridge injection
-- The service worker (`bg.js`) is intentionally minimal (~5 lines) since no background processing is needed
+- All AI calls are routed through the extension service worker so Gemini requests run in a trusted extension context instead of the page-bound content script
+- The service worker now handles Gemini request execution, API-key access, and proofread structured-output parsing
 - Each user's API key is stored exclusively in `chrome.storage.local` on their own device — never transmitted to any server other than Google's API
 
 ---
@@ -241,13 +241,16 @@ creaText_V2/
 ### Key Source Files
 
 #### `src/aiBuiltins.js`
-The entire AI backend in a single file. Exports five async functions (`summarize`, `translate`, `proofread`, `rewrite`, `write`) plus `getApiKey` / `saveApiKey` for key management. All functions call the Gemini 2.5 Flash REST API via `fetch()`.
+Thin client-side wrapper that forwards AI operations (`summarize`, `translate`, `proofread`, `rewrite`, `write`) plus `getApiKey` / `saveApiKey` to the service worker via `chrome.runtime.sendMessage`.
+
+#### `src/geminiService.js`
+The Gemini backend that runs inside the service worker. Handles API-key access, request execution, structured proofread output, and Gemini response validation.
 
 #### `src/content.jsx`
 The main React 19 application. Mounts itself into a **Shadow DOM** host attached to `document.documentElement` so the widget survives SPA navigation and remains isolated from host-page CSS. Contains:
 - `App` — root component managing state, drag, resize
 - `Settings` — theme presets, custom colors, API key UI, feature toggles
-- `Pane` — per-feature input and options
+- `Pane` — per-feature input and options, with draft preservation across tool switches
 - `ResultCard` — result display with copy button
 - `ColorModal` — live-preview color picker
 
@@ -316,6 +319,7 @@ All theming is implemented via **CSS custom properties** (`--fai-bg`, `--fai-sur
 - **No analytics, no telemetry, no third-party servers** — CreaText V2 makes exactly one type of external request: to the Gemini API
 - **No shared backend** — each user authenticates with their own free API key; there is no central server or shared quota
 - **Content script isolation** — the widget mounts inside a Shadow DOM host attached to the page root, sharply reducing interference from host-page CSS
+- **Trusted request path** — Gemini network requests run from the extension service worker rather than directly from the content script
 - **Permissions used:**
   - `storage` — persists API key, position, theme, and feature preferences
   - `activeTab` — allows the popup to detect the active tab
@@ -356,3 +360,5 @@ This project is licensed under the **ISC License**. See [LICENSE](./LICENSE) for
 <div align="center">
   <sub>Built with ❤️ using React 19 + Gemini 2.5 Flash</sub>
 </div>
+
+
