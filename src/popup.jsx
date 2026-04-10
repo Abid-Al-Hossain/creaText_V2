@@ -2,37 +2,22 @@
 import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 
-/* Retry sending a message to a tab until it lands or we give up.
-   The content script may take a moment to mount React and register
-   its onMessage listener, so we poll a few times. */
+/* Retry sendMessage until the content script's listener is ready */
 async function sendToTab(tabId, msg, { retries = 8, delayMs = 150 } = {}) {
   for (let i = 0; i < retries; i++) {
-    try {
-      await chrome.tabs.sendMessage(tabId, msg);
-      return; // success
-    } catch {
-      // "Receiving end does not exist" — content script not ready yet
-      await new Promise(r => setTimeout(r, delayMs));
-    }
+    try { await chrome.tabs.sendMessage(tabId, msg); return; }
+    catch { await new Promise(r => setTimeout(r, delayMs)); }
   }
 }
 
 async function ensureContentScript(tabId) {
-  // The content script is auto-injected via manifest on most pages.
-  // This is a fallback for pages already open before the extension loaded.
   try {
     const mf = chrome.runtime.getManifest();
     const jsFiles = mf.content_scripts?.[0]?.js ?? [];
     for (const f of jsFiles) {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: [f],
-        world: "ISOLATED",
-      });
+      await chrome.scripting.executeScript({ target: { tabId }, files: [f], world: "ISOLATED" });
     }
-  } catch {
-    // Already injected, restricted page, etc. — ignore silently.
-  }
+  } catch {}
 }
 
 function Popup() {
@@ -62,20 +47,44 @@ function Popup() {
 
   return (
     <>
-      <div className="row">
-        <div>
-          <div style={{ fontWeight: 700 }}>CreaText</div>
-          <div style={{ opacity: .8, fontSize: 12 }}>Toggle the floating bubble on pages</div>
+      {/* Header */}
+      <div className="popup-header">
+        <div className="popup-logo">CT</div>
+        <div className="popup-title-group">
+          <div className="popup-title">CreaText</div>
+          <div className="popup-sub">AI Writing Toolkit</div>
         </div>
-        <label>
+      </div>
+
+      {/* Enable toggle */}
+      <div className="popup-row">
+        <span className="popup-row-label">Enable on this page</span>
+        <label className="toggle-pill">
           <input type="checkbox" checked={enabled} onChange={e => update(e.target.checked)} />
+          <span className="toggle-track" />
         </label>
       </div>
-      <div className="row" style={{ gap: 8, padding: "12px 14px" }}>
-        <button onClick={() => send("__open__")}>Show now</button>
-        <button onClick={() => send("__open_settings__")}>Quick settings</button>
+
+      {/* Action buttons */}
+      <div className="popup-actions">
+        <button className="popup-btn" onClick={() => send("__open__")}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="10"/><polyline points="12 8 16 12 12 16"/><line x1="8" y1="12" x2="16" y2="12"/>
+          </svg>
+          Show Now
+        </button>
+        <button className="popup-btn" onClick={() => send("__open_settings__")}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+          Settings
+        </button>
       </div>
-      <div className="hint">Note: Won't show on chrome:// pages or the Web Store.</div>
+
+      {/* Hint */}
+      <div className="popup-hint">
+        Won't show on <code style={{ fontSize: 10, opacity: .75 }}>chrome://</code> pages or the Web Store.
+      </div>
     </>
   );
 }
