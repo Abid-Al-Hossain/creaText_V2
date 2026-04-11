@@ -4,6 +4,13 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  DEFAULT_GROQ_MODEL as SHARED_DEFAULT_GROQ_MODEL,
+  DEFAULT_GEMINI_MODEL as SHARED_DEFAULT_GEMINI_MODEL,
+  GEMINI_MODEL_OPTIONS as ACCURACY_MODEL_OPTIONS,
+  GROQ_MODEL_OPTIONS as SPEED_MODEL_OPTIONS,
+  getGroqModelLabel,
+} from "./providerCatalog";
+import {
   summarize, translate, rewrite, proofread, write,
   getAiSettings, saveAiSettings,
 } from "./aiBuiltins";
@@ -35,11 +42,11 @@ const THEME_PRESETS = {
 };
 
 const FEATURES_META = {
-  summarize: { icon: "◈", label: "Summarize", desc: "Condense text to key points" },
-  translate:  { icon: "⇆", label: "Translate",  desc: "Convert to any language"      },
-  proofread:  { icon: "◎", label: "Proofread",  desc: "Fix grammar & spelling"       },
-  rewrite:    { icon: "↺", label: "Rewrite",    desc: "Restructure & rephrase"       },
-  write:      { icon: "✎", label: "Write",      desc: "Generate from a prompt"       },
+  summarize: { icon: "\u25C8", label: "Summarize", desc: "Condense text to key points" },
+  translate: { icon: "\u21C4", label: "Translate", desc: "Convert to any language" },
+  proofread: { icon: "\u25CE", label: "Proofread", desc: "Fix grammar & spelling" },
+  rewrite: { icon: "\u21BA", label: "Rewrite", desc: "Restructure & rephrase" },
+  write: { icon: "\u270E", label: "Write", desc: "Generate from a prompt" },
 };
 
 const AI_MODE_META = {
@@ -47,67 +54,33 @@ const AI_MODE_META = {
     label: "Accuracy",
     provider: "gemini",
     providerLabel: "Gemini",
-    providerBadge: "Accuracy · Gemini",
+    providerBadge: "Accuracy \u00B7 Gemini",
     keyLabel: "Gemini API Key",
-    keyPlaceholder: "Paste your Gemini API key here…",
+    keyPlaceholder: "Paste your Gemini API key here...",
     keyLink: "https://aistudio.google.com/app/apikey",
-    keyLinkLabel: "Get free Gemini key ↗",
+    keyLinkLabel: "Get free Gemini key ->",
   },
   speed: {
     label: "Speed",
     provider: "groq",
     providerLabel: "Groq",
-    providerBadge: "Speed · Groq",
+    providerBadge: "Speed \u00B7 Groq",
     keyLabel: "Groq API Key",
-    keyPlaceholder: "Paste your Groq API key here…",
+    keyPlaceholder: "Paste your Groq API key here...",
     keyLink: "https://console.groq.com/keys",
-    keyLinkLabel: "Get Groq key ↗",
+    keyLinkLabel: "Get Groq key ->",
+  },
+  best_effort: {
+    label: "Best Effort",
+    provider: "openrouter",
+    providerLabel: "OpenRouter",
+    providerBadge: "Best Effort \u00B7 Auto",
+    keyLabel: "OpenRouter API Key",
+    keyPlaceholder: "Paste your OpenRouter API key here...",
+    keyLink: "https://openrouter.ai/settings/keys",
+    keyLinkLabel: "Get OpenRouter key ->",
   },
 };
-
-const ACCURACY_MODEL_OPTIONS = [
-  {
-    value: "gemini-2.5-flash",
-    label: "Gemini 2.5 Flash",
-    note: "Stable default · best free-tier balance",
-    shortLabel: "2.5 Flash",
-  },
-  {
-    value: "gemini-2.5-pro",
-    label: "Gemini 2.5 Pro",
-    note: "Best free-tier accuracy · lower daily quota",
-    shortLabel: "2.5 Pro",
-  },
-  {
-    value: "gemini-3-flash-preview",
-    label: "Gemini 3 Flash Preview",
-    note: "Newer preview model · strongest experimental option",
-    shortLabel: "3 Flash Preview",
-  },
-];
-
-const SPEED_MODEL_OPTIONS = [
-  {
-    value: "openai/gpt-oss-20b",
-    label: "GPT-OSS 20B",
-    note: "Fastest compact option · best default for quick writing tasks",
-    shortLabel: "GPT-OSS 20B",
-  },
-  {
-    value: "openai/gpt-oss-120b",
-    label: "GPT-OSS 120B",
-    note: "Largest open-weight option here · strongest Groq-side reasoning/quality",
-    shortLabel: "GPT-OSS 120B",
-  },
-  {
-    value: "meta-llama/llama-4-scout-17b-16e-instruct",
-    label: "Llama 4 Scout",
-    note: "General-purpose multimodal instruct model · good breadth and speed",
-    shortLabel: "Llama 4 Scout",
-  },
-];
-
-/* ------------ Spring presets ------------ */
 const SPRING_SNAPPY = { type: "spring", stiffness: 320, damping: 24 };
 const SPRING_SOFT   = { type: "spring", stiffness: 220, damping: 22 };
 
@@ -268,7 +241,7 @@ function ResultCard({ text }) {
       <div className="fai-result-text">{text}</div>
       <button className={`fai-copy-btn${copied ? " fai-copy-btn--copied" : ""}`}
         onClick={handleCopy} title="Copy to clipboard" aria-label="Copy result">
-        {copied ? "✓ Copied" : "Copy"}
+        {copied ? "Copied" : "Copy"}
       </button>
     </motion.div>
   );
@@ -282,8 +255,8 @@ function App() {
   const [features, setFeatures] = useStorage("fai_features", defaultFeatures);
   const [preset, setPreset]   = useStorage("fai_theme_preset", "default");
   const [aiMode, setAiMode]   = useStorage("ai_provider_mode", "accuracy");
-  const [accuracyModel, setAccuracyModel] = useStorage("ai_accuracy_model", "gemini-2.5-flash");
-  const [speedModel, setSpeedModel] = useStorage("ai_speed_model", "openai/gpt-oss-20b");
+  const [accuracyModel, setAccuracyModel] = useStorage("ai_accuracy_model", SHARED_DEFAULT_GEMINI_MODEL);
+  const [speedModel, setSpeedModel] = useStorage("ai_speed_model", SHARED_DEFAULT_GROQ_MODEL);
 
   const [active, setActive]           = useState("summarize");
   const [open, setOpen]               = useState(false);
@@ -525,10 +498,10 @@ function App() {
   const runOp = async (op, text, opts, { skipFallbackPrompt = false } = {}) => {
     lastRunRef.current = { op, text, opts };
     setFallbackNotice(null);
-    if (!text?.trim()) { setStatusMsg("⚠️ Please enter some text."); setTimeout(() => setStatusMsg(""), 2000); return; }
+    if (!text?.trim()) { setStatusMsg("Please enter some text."); setTimeout(() => setStatusMsg(""), 2000); return; }
     const token = ++runTokenRef.current;
     const labels = { summarize: "Summarizing", translate: "Translating", proofread: "Proofreading", rewrite: "Rewriting", write: "Writing" };
-    setStatusMsg(`${labels[op] || "Processing"}…`, true);
+    setStatusMsg(`${labels[op] || "Processing"}...`, true);
     setResults([]);
     try {
       let result = "";
@@ -550,7 +523,7 @@ function App() {
         const res = await proofread(text);
         const corrected = res?.correctedText || String(res);
         const changes   = Array.isArray(res?.changes) && res.changes.length
-          ? "\n\n📝 Changes:\n" + res.changes.map(c => `• ${c}`).join("\n") : "";
+          ? "\n\nChanges:\n" + res.changes.map(c => `\u2022 ${c}`).join("\n") : "";
         result = corrected + changes;
         meta = res?.meta || null;
       }
@@ -567,21 +540,27 @@ function App() {
 
       if (token !== runTokenRef.current || activeRef.current !== op || showSettingsRef.current) return;
       setResults([{ id: Date.now(), text: result }]);
-      if (meta?.fallbackFrom === "gemini" && meta?.provider === "groq") {
-        setStatusMsg("⚠ Gemini was unavailable. Used Groq speed fallback.", false);
+      if (meta?.bestEffort && meta?.attempted?.length) {
+        const providerLabel = meta.provider === "openrouter" ? "OpenRouter" : meta.provider === "groq" ? "Groq" : "Gemini";
+        setStatusMsg(`Best Effort finished via ${providerLabel}.`, false);
+      } else if (meta?.fallbackFrom === "gemini" && meta?.provider === "groq") {
+        setStatusMsg("Gemini was unavailable. Used Groq speed fallback.", false);
       } else {
-        setStatusMsg("✅ Done!");
+        setStatusMsg("Done!");
       }
       setTimeout(() => setStatusMsg(""), 3000);
     } catch (err) {
       if (token !== runTokenRef.current || activeRef.current !== op || showSettingsRef.current) return;
       if (String(err.message || "").startsWith("NO_API_KEY:")) {
         const provider = String(err.message || "").split(":")[1];
-        const providerLabel = provider === "groq" ? "Groq" : "Gemini";
-        setStatusMsg(`🔑 Add your ${providerLabel} API key in ⚙️ Settings.`);
+        const providerLabel = provider === "groq" ? "Groq" : provider === "openrouter" ? "OpenRouter" : "Gemini";
+        setStatusMsg(`Add your ${providerLabel} API key in Settings.`);
+        setTimeout(() => setStatusMsg(""), 6000);
+      } else if (String(err.message || "").startsWith("NO_PROVIDER_CHAIN:")) {
+        setStatusMsg("Best Effort needs at least one saved Gemini, Groq, or OpenRouter key.");
         setTimeout(() => setStatusMsg(""), 6000);
       } else {
-        setStatusMsg(`❌ ${err.message || "An error occurred."}`);
+        setStatusMsg(`Error: ${err.message || "An error occurred."}`);
         if (!skipFallbackPrompt && aiMode === "accuracy" && isTransientProviderFailure(err.message)) {
           setFallbackNotice({
             kind: "provider-fallback",
@@ -605,7 +584,7 @@ function App() {
     if (!lastRun) return;
     setFallbackNotice(null);
     setResults([]);
-    setStatusMsg("Switching to Speed and retrying with Groq…", true);
+    setStatusMsg("Switching to Speed and retrying with Groq...", true);
     await setAiMode("speed");
     await runOp(lastRun.op, lastRun.text, lastRun.opts, { skipFallbackPrompt: true });
   };
@@ -615,7 +594,7 @@ function App() {
     if (!lastRun) return;
     setFallbackNotice(null);
     setResults([]);
-    setStatusMsg("Switching to Llama 4 Scout and retrying…", true);
+    setStatusMsg("Switching to Llama 4 Scout and retrying...", true);
     await setAiMode("speed");
     await setSpeedModel("meta-llama/llama-4-scout-17b-16e-instruct");
     await runOp(lastRun.op, lastRun.text, lastRun.opts, { skipFallbackPrompt: true });
@@ -652,7 +631,7 @@ function App() {
           transition={SPRING_SOFT}
           style={{ left: pos.left, right: pos.right, top: pos.top, bottom: pos.bottom, width: pos.width, height: pos.height, ...varStyle }}>
 
-          {/* ── Sidebar ── */}
+          {/* Sidebar */}
           <div className="fai-sidebar">
             <div className="fai-head" onPointerDown={onDragStart}>
               <div className="fai-logo-mark">CT</div>
@@ -704,12 +683,16 @@ function App() {
 
             <div className="fai-sidebar-footer">
               <span className="fai-sidebar-badge">
-                {aiMode === "accuracy" ? `Accuracy · ${accuracyModelMeta.shortLabel}` : `Speed · ${speedModelMeta.shortLabel}`}
+                {aiMode === "accuracy"
+                  ? `Accuracy · ${accuracyModelMeta.shortLabel}`
+                  : aiMode === "speed"
+                    ? `Speed · ${speedModelMeta.shortLabel}`
+                    : "Best Effort · Auto"}
               </span>
             </div>
           </div>
 
-          {/* ── Body ── */}
+          {/* Body */}
           <div className="fai-body">
             {showSettings ? (
               <Settings
@@ -789,10 +772,10 @@ function App() {
 /* ------------ Settings ------------ */
 function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedModel, setSpeedModel, theme, setTheme, preset, setPreset, bubble, features, setFeatures }) {
   const [colorModal, setColorModal] = useState({ open: false, key: "", label: "" });
-  const [apiKeys, setApiKeys]       = useState({ gemini: "", groq: "" });
-  const [groqQuota]                 = useStorage("groq_rate_limit_state", null);
-  const [showKey, setShowKey]       = useState(false);
-  const [keySaved, setKeySaved]     = useState(false);
+  const [apiKeys, setApiKeys] = useState({ gemini: "", groq: "", openrouter: "" });
+  const [groqQuota] = useStorage("groq_rate_limit_state", null);
+  const [showKey, setShowKey] = useState(false);
+  const [keySaved, setKeySaved] = useState(false);
   const prevThemeRef = useRef(theme);
   const isCustom = preset === "custom";
   const enabledCount = Object.values(features).filter(Boolean).length;
@@ -808,17 +791,20 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
       setApiKeys({
         gemini: settings?.geminiApiKey || "",
         groq: settings?.groqApiKey || "",
+        openrouter: settings?.openrouterApiKey || "",
       });
     });
   }, []);
   useEffect(() => { setKeySaved(false); }, [aiMode, currentKey]);
 
   const handleSaveKey = async () => {
-    await saveAiSettings({
-      ...(currentProvider === "gemini"
+    await saveAiSettings(
+      currentProvider === "gemini"
         ? { geminiApiKey: currentKey.trim() }
-        : { groqApiKey: currentKey.trim() }),
-    });
+        : currentProvider === "groq"
+          ? { groqApiKey: currentKey.trim() }
+          : { openrouterApiKey: currentKey.trim() }
+    );
     setKeySaved(true);
     setTimeout(() => setKeySaved(false), 2500);
   };
@@ -842,7 +828,7 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
     setPreset(name);
   };
 
-  const openModal  = (key, label) => { if (!isCustom) return; prevThemeRef.current = { ...theme }; setColorModal({ open: true, key, label }); };
+  const openModal = (key, label) => { if (!isCustom) return; prevThemeRef.current = { ...theme }; setColorModal({ open: true, key, label }); };
   const closeModal = () => setColorModal({ open: false, key: "", label: "" });
   const cancelModal = () => { setTheme(prevThemeRef.current); closeModal(); };
 
@@ -868,36 +854,20 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
 
   return (
     <div className="fai-settings">
-      {/* API Key */}
       <div className="fai-settings-section">
         <div className="fai-settings-section-title">AI Connection</div>
         <div className="fai-settings-stack">
           <div className="fai-segment" role="group" aria-label="AI mode">
-            <button
-              type="button"
-              className={`fai-segment-btn${aiMode === "accuracy" ? " active" : ""}`}
-              aria-pressed={aiMode === "accuracy"}
-              onClick={() => setAiMode("accuracy")}>
-              Accuracy
-            </button>
-            <button
-              type="button"
-              className={`fai-segment-btn${aiMode === "speed" ? " active" : ""}`}
-              aria-pressed={aiMode === "speed"}
-              onClick={() => setAiMode("speed")}>
-              Speed
-            </button>
+            <button type="button" className={`fai-segment-btn${aiMode === "accuracy" ? " active" : ""}`} aria-pressed={aiMode === "accuracy"} onClick={() => setAiMode("accuracy")}>Accuracy</button>
+            <button type="button" className={`fai-segment-btn${aiMode === "speed" ? " active" : ""}`} aria-pressed={aiMode === "speed"} onClick={() => setAiMode("speed")}>Speed</button>
+            <button type="button" className={`fai-segment-btn${aiMode === "best_effort" ? " active" : ""}`} aria-pressed={aiMode === "best_effort"} onClick={() => setAiMode("best_effort")}>Best Effort</button>
           </div>
-          <div className="hint">
-            Accuracy uses <b>Gemini</b> for stronger writing quality. Speed uses <b>Groq</b> for faster replies.
-          </div>
-          <div className="hint">Both keys are stored separately so you can switch modes instantly.</div>
+          <div className="hint">Accuracy uses <b>Gemini</b>. Speed uses <b>Groq</b>. Best Effort tries your saved <b>Gemini</b> key first, then <b>Groq</b>, then <b>OpenRouter free</b>.</div>
+          <div className="hint">Technical failures, rate limits, and request-size failures can fail over automatically. Safety/refusal blocks do not.</div>
         </div>
         <div className="fai-apikey-label">
           <span>{aiMeta.keyLabel}</span>
-          <a href={aiMeta.keyLink} target="_blank" rel="noreferrer" className="fai-apikey-link">
-            {aiMeta.keyLinkLabel}
-          </a>
+          <a href={aiMeta.keyLink} target="_blank" rel="noreferrer" className="fai-apikey-link">{aiMeta.keyLinkLabel}</a>
         </div>
         <div className="fai-apikey-row">
           <input className="fai-apikey-input" type={showKey ? "text" : "password"}
@@ -905,54 +875,36 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
             onChange={e => setApiKeys((prev) => ({ ...prev, [currentProvider]: e.target.value }))}
             onFocus={e => e.target.select()}
             spellCheck={false} aria-label={aiMeta.keyLabel} />
-          <button className="fai-eye-btn" type="button" onClick={() => setShowKey(v => !v)}
-            title={showKey ? "Hide key" : "Show key"}>
-            {showKey ? "🙈" : "👁️"}
-          </button>
-          <button className={`fai-pop-btn${keySaved ? " fai-pop-btn--done" : ""}`}
-            style={{ whiteSpace: "nowrap" }} onClick={handleSaveKey}>
-            {keySaved ? "✓ Saved" : "Save"}
-          </button>
+          <button className="fai-eye-btn" type="button" onClick={() => setShowKey(v => !v)} title={showKey ? "Hide key" : "Show key"}>{showKey ? "Hide" : "Show"}</button>
+          <button className={`fai-pop-btn${keySaved ? " fai-pop-btn--done" : ""}`} style={{ whiteSpace: "nowrap" }} onClick={handleSaveKey}>{keySaved ? "Saved" : "Save"}</button>
         </div>
         {aiMode === "accuracy" && (
           <>
             <div className="fai-settings-row" style={{ marginTop: 10 }}>
               <label className="fai-settings-label">Model</label>
-              <select
-                value={accuracyModel}
-                onChange={e => setAccuracyModel(e.target.value)}
-                className="fai-select"
-                aria-label="Accuracy model">
-                {ACCURACY_MODEL_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
+              <select value={accuracyModel} onChange={e => setAccuracyModel(e.target.value)} className="fai-select" aria-label="Accuracy model">
+                {ACCURACY_MODEL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
             </div>
             <div className="hint" style={{ marginTop: 8 }}>{selectedAccuracyModel.note}</div>
-            <div className="hint">All three use the same Gemini API key. `2.5 Flash` is the safest default.</div>
+            <div className="hint">All three use the same Gemini API key. 2.5 Flash is still the safest default.</div>
           </>
         )}
         {aiMode === "speed" && (
           <>
             <div className="fai-settings-row" style={{ marginTop: 10 }}>
               <label className="fai-settings-label">Model</label>
-              <select
-                value={speedModel}
-                onChange={e => setSpeedModel(e.target.value)}
-                className="fai-select"
-                aria-label="Speed model">
-                {SPEED_MODEL_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
+              <select value={speedModel} onChange={e => setSpeedModel(e.target.value)} className="fai-select" aria-label="Speed model">
+                {SPEED_MODEL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
             </div>
             <div className="hint" style={{ marginTop: 8 }}>{selectedSpeedModel.note}</div>
+            <div className="hint">More capable models are not always better on Groq free plans; GPT-OSS models hit tighter TPM limits than Llama 4 Scout.</div>
             <div className="fai-quota-card" style={{ marginTop: 12 }}>
               <div className="fai-quota-title">Live Groq quota</div>
               {!quotaMatchesSelectedSpeedModel && (
                 <div className="hint" style={{ marginBottom: 8 }}>
-                  Selected model is <b>{selectedSpeedModel.label}</b>, but this quota snapshot is still from <b>{getSpeedModelLabel(groqQuota?.model)}</b>.
-                  Run one Speed request to refresh the quota for the selected model.
+                  Selected model is <b>{selectedSpeedModel.label}</b>, but this quota snapshot is still from <b>{getGroqModelLabel(groqQuota?.model)}</b>. Run one Speed request to refresh the quota for the selected model.
                 </div>
               )}
               {groqQuota ? (
@@ -960,17 +912,11 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
                   <div className="fai-quota-grid">
                     <div className="fai-quota-item">
                       <span className="fai-quota-label">RPD left</span>
-                      <span className="fai-quota-value">
-                        {groqQuota.remainingRequests ?? "—"}
-                        {groqQuota.limitRequests != null ? ` / ${groqQuota.limitRequests}` : ""}
-                      </span>
+                      <span className="fai-quota-value">{groqQuota.remainingRequests ?? "-"}{groqQuota.limitRequests != null ? ` / ${groqQuota.limitRequests}` : ""}</span>
                     </div>
                     <div className="fai-quota-item">
                       <span className="fai-quota-label">TPM left</span>
-                      <span className="fai-quota-value">
-                        {groqQuota.remainingTokens ?? "—"}
-                        {groqQuota.limitTokens != null ? ` / ${groqQuota.limitTokens}` : ""}
-                      </span>
+                      <span className="fai-quota-value">{groqQuota.remainingTokens ?? "-"}{groqQuota.limitTokens != null ? ` / ${groqQuota.limitTokens}` : ""}</span>
                     </div>
                     <div className="fai-quota-item">
                       <span className="fai-quota-label">RPD reset hint</span>
@@ -981,12 +927,8 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
                       <span className="fai-quota-value">{groqQuota.resetTokens || "Unknown"}</span>
                     </div>
                   </div>
-                  <div className="hint" style={{ marginTop: 8 }}>
-                    Raw header snapshot only. No countdowns or predictions are inferred by the extension.
-                  </div>
-                  <div className="hint" style={{ marginTop: 8 }}>
-                    Snapshot model: <b>{getSpeedModelLabel(groqQuota.model || selectedSpeedModel.value)}</b> · Updated {formatLastUpdated(groqQuota.updatedAt)}
-                  </div>
+                  <div className="hint" style={{ marginTop: 8 }}>Raw header snapshot only. No countdowns or predictions are inferred by the extension.</div>
+                  <div className="hint" style={{ marginTop: 8 }}>Snapshot model: <b>{getGroqModelLabel(groqQuota.model || selectedSpeedModel.value)}</b> · Updated {formatLastUpdated(groqQuota.updatedAt)}</div>
                 </>
               ) : (
                 <div className="hint">Run one request in Speed mode to load live Groq quota from response headers.</div>
@@ -994,17 +936,24 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
             </div>
           </>
         )}
+        {aiMode === "best_effort" && (
+          <div className="fai-quota-card" style={{ marginTop: 12 }}>
+            <div className="fai-quota-title">Best Effort order</div>
+            <div className="hint" style={{ marginTop: 8 }}>1. Gemini - {selectedAccuracyModel.label}</div>
+            <div className="hint">2. Groq - {selectedSpeedModel.label}</div>
+            <div className="hint">3. OpenRouter - openrouter/free</div>
+            <div className="hint" style={{ marginTop: 8 }}>Saved keys: Gemini <b>{apiKeys.gemini ? "yes" : "no"}</b> · Groq <b>{apiKeys.groq ? "yes" : "no"}</b> · OpenRouter <b>{apiKeys.openrouter ? "yes" : "no"}</b></div>
+          </div>
+        )}
       </div>
 
       <div className="fai-settings-divider" />
 
-      {/* Theme */}
       <div className="fai-settings-section">
         <div className="fai-settings-section-title">Appearance</div>
         <div className="fai-settings-row">
           <label className="fai-settings-label">Theme</label>
-          <select value={preset} onChange={e => onPresetChange(e.target.value)}
-            className="fai-select" aria-label="Choose theme">
+          <select value={preset} onChange={e => onPresetChange(e.target.value)} className="fai-select" aria-label="Choose theme">
             <option value="default">Default</option>
             <option value="ocean">Ocean</option>
             <option value="forest">Forest</option>
@@ -1013,28 +962,23 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
             <option value="lavender">Lavender</option>
             <option value="custom">Custom</option>
           </select>
-          <button type="button" onClick={() => onPresetChange("default")}
-            className="fai-reset-btn" title="Reset to default">Reset</button>
+          <button type="button" onClick={() => onPresetChange("default")} className="fai-reset-btn" title="Reset to default">Reset</button>
         </div>
-
         <div className="fai-settings-row" style={{ marginTop: 10 }}>
           <label className="fai-settings-label">Bubble size</label>
-          <input className="fai-range" type="range" min="32" max="56" value={bubble}
-            onChange={onBubbleChange} style={{ flex: 1, ["--val"]: `${rangePercent}%` }} />
+          <input className="fai-range" type="range" min="32" max="56" value={bubble} onChange={onBubbleChange} style={{ flex: 1, ["--val"]: `${rangePercent}%` }} />
           <span style={{ opacity: .75, fontSize: 12, minWidth: 32, textAlign: "right" }}>{bubble}px</span>
         </div>
-
         {isCustom && (
           <>
             <div className="fai-grid" style={{ marginTop: 12 }}>
-              <ColorSwatch label="Panel"  color={theme.bg     || theme.bgRaw}     onOpen={() => openModal("bg",     "Panel Color")} />
+              <ColorSwatch label="Panel" color={theme.bg || theme.bgRaw} onOpen={() => openModal("bg", "Panel Color")} />
               <ColorSwatch label="Border" color={theme.border || theme.borderRaw} onOpen={() => openModal("border", "Border Color")} />
               <ColorSwatch label="Accent" color={theme.accent || theme.accentRaw} onOpen={() => openModal("accent", "Accent Color")} />
             </div>
             <div className="fai-settings-row" style={{ marginTop: 10 }}>
               <label className="fai-settings-label">Text color</label>
-              <select value={currentTone} onChange={e => setTextTone(e.target.value)}
-                className="fai-select" aria-label="Text color">
+              <select value={currentTone} onChange={e => setTextTone(e.target.value)} className="fai-select" aria-label="Text color">
                 <option value="black">Black</option>
                 <option value="white">White</option>
                 <option value="ash">Ash</option>
@@ -1053,15 +997,12 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
 
       <div className="fai-settings-divider" />
 
-      {/* Features */}
       <div className="fai-settings-section">
         <div className="fai-settings-section-title">Features</div>
         <div className="fai-feature-toggles">
           {Object.keys(features).map(key => (
             <label key={key} className="fai-toggle-item">
-              <input type="checkbox" checked={!!features[key]}
-                disabled={enabledCount === 1 && !!features[key]}
-                onChange={e => setFeatures({ ...features, [key]: e.target.checked })} />
+              <input type="checkbox" checked={!!features[key]} disabled={enabledCount === 1 && !!features[key]} onChange={e => setFeatures({ ...features, [key]: e.target.checked })} />
               <span>{FEATURES_META[key]?.icon || ""} {key[0].toUpperCase() + key.slice(1)}</span>
             </label>
           ))}
@@ -1070,7 +1011,6 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
     </div>
   );
 }
-
 /* ------------ Pane ------------ */
 function Pane({ active, draft, onDraftChange, onRun }) {
   const [busy, setBusy] = useState(false);
@@ -1172,7 +1112,7 @@ function Pane({ active, draft, onDraftChange, onRun }) {
         className="fai-input"
         value={input}
         onChange={(e) => onDraftChange({ input: e.target.value })}
-        placeholder={active === "write" ? "Describe what you want written…" : "Paste or type your text here…"}
+        placeholder={active === "write" ? "Describe what you want written..." : "Paste or type your text here..."}
         disabled={busy}
       />
       <motion.button
@@ -1183,8 +1123,8 @@ function Pane({ active, draft, onDraftChange, onRun }) {
         whileTap={!busy ? { scale: 0.97 } : {}}
         whileHover={!busy ? { scale: 1.01 } : {}}>
         {busy
-          ? <><span className="fai-spinner" />Processing…</>
-          : <>Run  ›</>}
+          ? <><span className="fai-spinner" />Processing...</>
+          : <>Run {"\u203A"}</>}
       </motion.button>
     </div>
   );
@@ -1208,3 +1148,5 @@ function Pane({ active, draft, onDraftChange, onRun }) {
   document.documentElement.appendChild(host);
   createRoot(mount).render(<App />);
 })();
+
+

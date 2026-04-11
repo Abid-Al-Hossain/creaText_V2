@@ -1,7 +1,13 @@
-const PROVIDER_FOR_MODE = {
-  accuracy: "gemini",
-  speed: "groq",
-};
+import {
+  ALLOWED_GEMINI_MODELS,
+  ALLOWED_GROQ_MODELS,
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_GROQ_MODEL,
+  getGroqModelLabel,
+  getGroqModelOption,
+  GPT_OSS_MODELS,
+  OPENROUTER_FREE_MODEL,
+} from "./providerCatalog";
 
 const PROVIDER_META = {
   gemini: {
@@ -10,29 +16,16 @@ const PROVIDER_META = {
   },
   groq: {
     label: "Groq",
-    model: "openai/gpt-oss-20b",
     keyStorage: "groq_api_key",
+  },
+  openrouter: {
+    label: "OpenRouter",
+    keyStorage: "openrouter_api_key",
   },
 };
 
-const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
-const ALLOWED_GEMINI_MODELS = new Set([
-  "gemini-2.5-flash",
-  "gemini-2.5-pro",
-  "gemini-3-flash-preview",
-]);
-const DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b";
-const ALLOWED_GROQ_MODELS = new Set([
-  "openai/gpt-oss-20b",
-  "openai/gpt-oss-120b",
-  "meta-llama/llama-4-scout-17b-16e-instruct",
-]);
-const GPT_OSS_MODELS = new Set([
-  "openai/gpt-oss-20b",
-  "openai/gpt-oss-120b",
-]);
-
 const GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions";
+const OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions";
 const GROQ_RATE_LIMIT_STORAGE_KEY = "groq_rate_limit_state";
 
 const PROOFREAD_SCHEMA = {
@@ -47,12 +40,6 @@ const PROOFREAD_SCHEMA = {
   },
   required: ["correctedText", "changes"],
 };
-
-function storageGet(key, fallback = "") {
-  return new Promise((resolve) => {
-    chrome.storage.local.get({ [key]: fallback }, (store) => resolve(store[key] ?? fallback));
-  });
-}
 
 function storageGetMany(defaults) {
   return new Promise((resolve) => {
@@ -132,13 +119,6 @@ function estimateTokens(text) {
   return Math.ceil(String(text || "").length / 4);
 }
 
-function getGroqModelLabel(model) {
-  if (model === "openai/gpt-oss-20b") return "GPT-OSS 20B";
-  if (model === "openai/gpt-oss-120b") return "GPT-OSS 120B";
-  if (model === "meta-llama/llama-4-scout-17b-16e-instruct") return "Llama 4 Scout";
-  return "Groq";
-}
-
 function getGroqMaxCompletionTokens(model, prompt, requestedMaxTokens) {
   if (!GPT_OSS_MODELS.has(model)) return requestedMaxTokens;
   const estimatedPromptTokens = estimateTokens(prompt);
@@ -158,7 +138,9 @@ function getGeminiUrl(model, key) {
 }
 
 function getModeProvider(mode) {
-  return PROVIDER_FOR_MODE[mode] || PROVIDER_FOR_MODE.accuracy;
+  if (mode === "speed") return "groq";
+  if (mode === "best_effort") return "openrouter";
+  return "gemini";
 }
 
 function getGeminiCandidateText(candidate) {
@@ -174,17 +156,53 @@ function getGeminiFinishReasonError(finishReason) {
   return `Gemini stopped with finish reason: ${finishReason}.`;
 }
 
-function getGroqFinishReasonError(finishReason) {
+function getOpenAiFinishReasonError(finishReason, providerLabel) {
   const reason = String(finishReason || "").toLowerCase();
   if (!reason || reason === "stop") return "";
-  if (reason === "length") return "Response was truncated by Groq. Try a shorter input.";
-  if (reason === "content_filter") return "Response was blocked by Groq safety filters.";
-  if (reason === "tool_calls") return "Groq returned tool calls instead of text output.";
-  return `Groq stopped with finish reason: ${finishReason}.`;
+  if (reason === "length") return `Response was truncated by ${providerLabel}. Try a shorter input.`;
+  if (reason === "content_filter") return `Response was blocked by ${providerLabel} safety filters.`;
+  if (reason === "tool_calls") return `${providerLabel} returned tool calls instead of text output.`;
+  return `${providerLabel} stopped with finish reason: ${finishReason}.`;
+}
+
+function getOpenAiMessageText(message) {
+  if (typeof message?.content === "string") return message.content.trim();
+  if (Array.isArray(message?.content)) {
+    return message.content
+      .map((part) => (typeof part?.text === "string" ? part.text : ""))
+      .join("")
+      .trim();
+  }
+  return "";
 }
 
 function isRetriableStatus(status) {
   return status === 502 || status === 503 || status === 504;
+}
+
+function isProviderPolicyBlock(message) {
+  return /blocked|safety|recitation|refused|content filter|content_filter/i.test(String(message || ""));
+}
+
+function shouldTryNextProvider(error) {
+  if (!error) return false;
+  if (error.retriable) return true;
+  if (isProviderPolicyBlock(error.message)) return false;
+  return true;
+}
+
+function trimErrorMessage(message) {
+  return String(message || "").replace(/\s+/g, " ").trim();
+}
+
+function buildBestEffortError(failures) {
+  if (!failures.length) return new Error("Best Effort could not run because no provider key is saved.");
+  if (failures.length === 1) return new Error(failures[0].message);
+
+  const summary = failures
+    .map((failure) => `${PROVIDER_META[failure.provider]?.label || failure.provider}: ${trimErrorMessage(failure.message)}`)
+    .join(" | ");
+  return new Error(`Best Effort exhausted all saved providers. ${summary}`);
 }
 
 async function withRetries(work, { retries = 2, delays = [500, 1200] } = {}) {
@@ -256,16 +274,15 @@ async function generateGeminiText(prompt, apiKey, options = {}) {
   const text = getGeminiCandidateText(candidate);
   if (!text) throw new Error("Gemini returned an empty response.");
 
-  return text;
+  return { text, actualModel: model };
 }
 
 async function generateGroqText(prompt, apiKey, options = {}) {
-  const model = normalizeGroqModel(options.model || PROVIDER_META.groq.model);
+  const model = normalizeGroqModel(options.model || DEFAULT_GROQ_MODEL);
   const messages = [];
-  if (options.systemPrompt) {
-    messages.push({ role: "system", content: options.systemPrompt });
-  }
+  if (options.systemPrompt) messages.push({ role: "system", content: options.systemPrompt });
   messages.push({ role: "user", content: prompt });
+
   const maxCompletionTokens = getGroqMaxCompletionTokens(model, prompt, options.maxTokens ?? 2048);
   if (GPT_OSS_MODELS.has(model) && estimateTokens(prompt) + maxCompletionTokens > 7600) {
     throw new Error(getGroqTooLargeError(model));
@@ -321,16 +338,78 @@ async function generateGroqText(prompt, apiKey, options = {}) {
   const choice = data?.choices?.[0];
   if (!choice) throw new Error("Groq returned no completion choice.");
 
-  const finishReasonError = getGroqFinishReasonError(choice.finish_reason);
+  const finishReasonError = getOpenAiFinishReasonError(choice.finish_reason, "Groq");
   if (finishReasonError) throw new Error(finishReasonError);
 
   const refusal = choice?.message?.refusal;
   if (refusal) throw new Error(`Groq refused the request: ${refusal}`);
 
-  const text = String(choice?.message?.content || "").trim();
+  const text = getOpenAiMessageText(choice?.message);
   if (!text) throw new Error("Groq returned an empty response.");
 
-  return text;
+  return { text, actualModel: model };
+}
+
+async function generateOpenRouterText(prompt, apiKey, options = {}) {
+  const body = {
+    model: options.model || OPENROUTER_FREE_MODEL,
+    messages: [{ role: "user", content: prompt }],
+    temperature: options.temperature ?? 0.7,
+    max_tokens: options.maxTokens ?? 2048,
+    provider: {
+      allow_fallbacks: true,
+      require_parameters: Boolean(options.responseFormat),
+    },
+  };
+
+  if (options.responseFormat) body.response_format = options.responseFormat;
+
+  const data = await withRetries(async () => {
+    let res;
+    try {
+      res = await fetch(OPENROUTER_CHAT_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+          "HTTP-Referer": "https://github.com/Abid-Al-Hossain/creaText_V2",
+          "X-OpenRouter-Title": "CreaText V2",
+        },
+        body: JSON.stringify(body),
+      });
+    } catch {
+      const error = new Error("OpenRouter network request failed. Check your connection, VPN, or firewall.");
+      error.retriable = true;
+      throw error;
+    }
+
+    if (!res.ok) {
+      let apiMessage = "";
+      try {
+        const err = await res.json();
+        apiMessage = err?.error?.message || err?.message || "";
+      } catch {}
+      const error = new Error(getFriendlyError("openrouter", res.status, apiMessage));
+      error.retriable = isRetriableStatus(res.status);
+      throw error;
+    }
+
+    return res.json();
+  });
+
+  const choice = data?.choices?.[0];
+  if (!choice) throw new Error("OpenRouter returned no completion choice.");
+
+  const finishReasonError = getOpenAiFinishReasonError(choice.finish_reason, "OpenRouter");
+  if (finishReasonError) throw new Error(finishReasonError);
+
+  const refusal = choice?.message?.refusal;
+  if (refusal) throw new Error(`OpenRouter refused the request: ${refusal}`);
+
+  const text = getOpenAiMessageText(choice?.message);
+  if (!text) throw new Error("OpenRouter returned an empty response.");
+
+  return { text, actualModel: data?.model || body.model };
 }
 
 async function getRuntimeConfig() {
@@ -340,53 +419,111 @@ async function getRuntimeConfig() {
     ai_speed_model: DEFAULT_GROQ_MODEL,
     gemini_api_key: "",
     groq_api_key: "",
+    openrouter_api_key: "",
   });
-  const mode = store.ai_provider_mode === "speed" ? "speed" : "accuracy";
-  const provider = getModeProvider(mode);
-  const keyStorage = PROVIDER_META[provider].keyStorage;
+  const mode = ["accuracy", "speed", "best_effort"].includes(store.ai_provider_mode)
+    ? store.ai_provider_mode
+    : "accuracy";
+
   return {
     mode,
-    provider,
+    provider: getModeProvider(mode),
     accuracyModel: normalizeGeminiModel(store.ai_accuracy_model),
     speedModel: normalizeGroqModel(store.ai_speed_model),
-    apiKey: String(store[keyStorage] || "").trim(),
-    fallbackApiKey: String(store.groq_api_key || "").trim(),
+    geminiApiKey: String(store.gemini_api_key || "").trim(),
+    groqApiKey: String(store.groq_api_key || "").trim(),
+    openrouterApiKey: String(store.openrouter_api_key || "").trim(),
   };
 }
 
 async function runTextWithProvider(provider, apiKey, prompt, options = {}) {
   if (provider === "groq") return generateGroqText(prompt, apiKey, options);
+  if (provider === "openrouter") return generateOpenRouterText(prompt, apiKey, options);
   return generateGeminiText(prompt, apiKey, options);
+}
+
+function getBestEffortAttempts(runtime) {
+  return [
+    runtime.geminiApiKey
+      ? { provider: "gemini", apiKey: runtime.geminiApiKey, model: runtime.accuracyModel }
+      : null,
+    runtime.groqApiKey
+      ? { provider: "groq", apiKey: runtime.groqApiKey, model: runtime.speedModel }
+      : null,
+    runtime.openrouterApiKey
+      ? { provider: "openrouter", apiKey: runtime.openrouterApiKey, model: OPENROUTER_FREE_MODEL }
+      : null,
+  ].filter(Boolean);
+}
+
+async function runBestEffortText(runtime, prompt, options = {}) {
+  const attempts = getBestEffortAttempts(runtime);
+  if (!attempts.length) throw new Error("NO_PROVIDER_CHAIN:best_effort");
+
+  const failures = [];
+  for (const attempt of attempts) {
+    try {
+      const res = await runTextWithProvider(attempt.provider, attempt.apiKey, prompt, {
+        ...options,
+        model: attempt.model,
+      });
+      return {
+        text: res.text,
+        meta: {
+          provider: attempt.provider,
+          model: res.actualModel || attempt.model,
+          bestEffort: true,
+          attempted: failures.map((failure) => failure.provider),
+        },
+      };
+    } catch (error) {
+      failures.push({
+        provider: attempt.provider,
+        message: error?.message || "Unknown error",
+      });
+      if (!shouldTryNextProvider(error)) throw buildBestEffortError(failures);
+    }
+  }
+
+  throw buildBestEffortError(failures);
 }
 
 async function generateText(prompt, options = {}) {
   const runtime = await getRuntimeConfig();
-  if (!runtime.apiKey) throw new Error(`NO_API_KEY:${runtime.provider}`);
+  if (runtime.mode === "best_effort") {
+    return runBestEffortText(runtime, prompt, options);
+  }
+
+  const apiKey = runtime.provider === "groq" ? runtime.groqApiKey : runtime.geminiApiKey;
+  if (!apiKey) throw new Error(`NO_API_KEY:${runtime.provider}`);
 
   try {
-    const text = await runTextWithProvider(runtime.provider, runtime.apiKey, prompt, {
+    const res = await runTextWithProvider(runtime.provider, apiKey, prompt, {
       ...options,
       model: runtime.provider === "gemini" ? runtime.accuracyModel : runtime.speedModel,
     });
     return {
-      text,
+      text: res.text,
       meta: {
         provider: runtime.provider,
-        model: runtime.provider === "gemini" ? runtime.accuracyModel : runtime.speedModel,
+        model: res.actualModel || (runtime.provider === "gemini" ? runtime.accuracyModel : runtime.speedModel),
       },
     };
   } catch (error) {
     const shouldFallback =
       runtime.provider === "gemini" &&
-      runtime.fallbackApiKey &&
+      runtime.groqApiKey &&
       /Gemini (server error \((502|503|504)\)|network request failed)/i.test(error?.message || "");
 
     if (!shouldFallback) throw error;
 
-    const text = await runTextWithProvider("groq", runtime.fallbackApiKey, prompt, options);
+    const res = await runTextWithProvider("groq", runtime.groqApiKey, prompt, {
+      ...options,
+      model: runtime.speedModel,
+    });
     return {
-      text,
-      meta: { provider: "groq", fallbackFrom: "gemini", model: runtime.speedModel },
+      text: res.text,
+      meta: { provider: "groq", fallbackFrom: "gemini", model: res.actualModel || runtime.speedModel },
     };
   }
 }
@@ -413,65 +550,134 @@ async function translate(text, { from = "auto", to = "en" } = {}) {
   );
 }
 
-async function proofread(text) {
-  const runtime = await getRuntimeConfig();
-  if (!runtime.apiKey) throw new Error(`NO_API_KEY:${runtime.provider}`);
-
-  const prompt =
-    "Proofread the following text. Fix grammar, spelling, punctuation, and clarity. " +
-    "Return the corrected text and a list of concrete changes. Return JSON only.\n\n" +
-    `Text:\n${text}`;
-
-  const runProofreadRaw = async (provider, apiKey) => (
-    provider === "groq"
-      ? generateGroqText(prompt, apiKey, {
-          model: runtime.speedModel,
-          temperature: 0.2,
-          responseFormat: {
-            type: "json_schema",
-            json_schema: {
-              name: "proofread_response",
-              strict: false,
-              schema: PROOFREAD_SCHEMA,
-            },
-          },
-        })
-      : generateGeminiText(prompt, apiKey, {
-          temperature: 0.2,
-          model: runtime.accuracyModel,
-          responseMimeType: "application/json",
-          responseJsonSchema: PROOFREAD_SCHEMA,
-        })
-  );
-
-  let raw;
-  let meta = {
-    provider: runtime.provider,
-    model: runtime.provider === "gemini" ? runtime.accuracyModel : runtime.speedModel,
-  };
-  try {
-    raw = await runProofreadRaw(runtime.provider, runtime.apiKey);
-  } catch (error) {
-    const shouldFallback =
-      runtime.provider === "gemini" &&
-      runtime.fallbackApiKey &&
-      /Gemini (server error \((502|503|504)\)|network request failed)/i.test(error?.message || "");
-
-    if (!shouldFallback) throw error;
-    raw = await runProofreadRaw("groq", runtime.fallbackApiKey);
-    meta = { provider: "groq", fallbackFrom: "gemini", model: runtime.speedModel };
-  }
+function parseProofreadJson(raw, provider) {
+  let source = String(raw || "").trim();
+  const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) source = fenced[1].trim();
 
   let parsed;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(source);
   } catch {
-    throw new Error(`${PROVIDER_META[runtime.provider].label} returned invalid proofread JSON.`);
+    throw new Error(`${PROVIDER_META[provider].label} returned invalid proofread JSON.`);
   }
 
   return {
     correctedText: typeof parsed?.correctedText === "string" ? parsed.correctedText : "",
     changes: Array.isArray(parsed?.changes) ? parsed.changes.map(String) : [],
+  };
+}
+
+async function runProofreadRaw(provider, apiKey, model, prompt) {
+  if (provider === "gemini") {
+    const res = await generateGeminiText(prompt, apiKey, {
+      temperature: 0.2,
+      model,
+      responseMimeType: "application/json",
+      responseJsonSchema: PROOFREAD_SCHEMA,
+    });
+    return { raw: res.text, actualModel: res.actualModel };
+  }
+
+  if (provider === "groq") {
+    const groqModel = getGroqModelOption(model);
+    const res = await generateGroqText(prompt, apiKey, {
+      model,
+      temperature: 0.2,
+      responseFormat:
+        groqModel.structuredOutput === "json_schema"
+          ? {
+              type: "json_schema",
+              json_schema: {
+                name: "proofread_response",
+                strict: false,
+                schema: PROOFREAD_SCHEMA,
+              },
+            }
+          : { type: "json_object" },
+    });
+    return { raw: res.text, actualModel: res.actualModel };
+  }
+
+  const res = await generateOpenRouterText(prompt, apiKey, {
+    model,
+    temperature: 0.2,
+    responseFormat: {
+      type: "json_schema",
+      json_schema: {
+        name: "proofread_response",
+        strict: false,
+        schema: PROOFREAD_SCHEMA,
+      },
+    },
+  });
+  return { raw: res.text, actualModel: res.actualModel };
+}
+
+async function proofread(text) {
+  const runtime = await getRuntimeConfig();
+  const prompt =
+    "Proofread the following text. Fix grammar, spelling, punctuation, and clarity. " +
+    "Return the corrected text and a list of concrete changes. Return JSON only.\n\n" +
+    `Text:\n${text}`;
+
+  if (runtime.mode === "best_effort") {
+    const attempts = getBestEffortAttempts(runtime);
+    if (!attempts.length) throw new Error("NO_PROVIDER_CHAIN:best_effort");
+
+    const failures = [];
+    for (const attempt of attempts) {
+      try {
+        const res = await runProofreadRaw(attempt.provider, attempt.apiKey, attempt.model, prompt);
+        return {
+          ...parseProofreadJson(res.raw, attempt.provider),
+          meta: {
+            provider: attempt.provider,
+            model: res.actualModel || attempt.model,
+            bestEffort: true,
+            attempted: failures.map((failure) => failure.provider),
+          },
+        };
+      } catch (error) {
+        failures.push({
+          provider: attempt.provider,
+          message: error?.message || "Unknown error",
+        });
+        if (!shouldTryNextProvider(error)) throw buildBestEffortError(failures);
+      }
+    }
+
+    throw buildBestEffortError(failures);
+  }
+
+  const apiKey = runtime.provider === "groq" ? runtime.groqApiKey : runtime.geminiApiKey;
+  if (!apiKey) throw new Error(`NO_API_KEY:${runtime.provider}`);
+
+  let response;
+  let meta = {
+    provider: runtime.provider,
+    model: runtime.provider === "gemini" ? runtime.accuracyModel : runtime.speedModel,
+  };
+  try {
+    response = await runProofreadRaw(
+      runtime.provider,
+      apiKey,
+      runtime.provider === "gemini" ? runtime.accuracyModel : runtime.speedModel,
+      prompt
+    );
+  } catch (error) {
+    const shouldFallback =
+      runtime.provider === "gemini" &&
+      runtime.groqApiKey &&
+      /Gemini (server error \((502|503|504)\)|network request failed)/i.test(error?.message || "");
+
+    if (!shouldFallback) throw error;
+    response = await runProofreadRaw("groq", runtime.groqApiKey, runtime.speedModel, prompt);
+    meta = { provider: "groq", fallbackFrom: "gemini", model: response.actualModel || runtime.speedModel };
+  }
+
+  return {
+    ...parseProofreadJson(response.raw, meta.provider),
     meta,
   };
 }
@@ -480,7 +686,7 @@ const REWRITE_PROMPTS = {
   paragraph:
     "Rewrite the following text as a clean, well-structured paragraph. Preserve the core meaning. Return only the rewritten text:",
   "key-points":
-    "Extract and list the key points from the following text as concise bullet points (use • as bullet). Return only the bullet list:",
+    "Extract and list the key points from the following text as concise bullet points (use * as bullet). Return only the bullet list:",
   table:
     "Convert the following text into a concise Markdown table with clear column headers. Return only the Markdown table:",
   "tone:formal":
@@ -505,10 +711,11 @@ async function write(taskPrompt, { tone = "neutral" } = {}) {
 
 export async function handleAiMessage(message) {
   if (message?.type === "__ai_get_settings__") {
-    const store = await storageGetMany({ gemini_api_key: "", groq_api_key: "" });
+    const store = await storageGetMany({ gemini_api_key: "", groq_api_key: "", openrouter_api_key: "" });
     return {
       geminiApiKey: store.gemini_api_key || "",
       groqApiKey: store.groq_api_key || "",
+      openrouterApiKey: store.openrouter_api_key || "",
     };
   }
 
@@ -519,6 +726,9 @@ export async function handleAiMessage(message) {
     }
     if (Object.prototype.hasOwnProperty.call(message.value || {}, "groqApiKey")) {
       next.groq_api_key = message.value.groqApiKey || "";
+    }
+    if (Object.prototype.hasOwnProperty.call(message.value || {}, "openrouterApiKey")) {
+      next.openrouter_api_key = message.value.openrouterApiKey || "";
     }
     await storageSet(next);
     return { ok: true };
