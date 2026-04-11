@@ -1,4 +1,4 @@
-﻿// src/content.jsx
+// src/content.jsx
 import stylesText from "./style.css?inline";
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { createRoot } from "react-dom/client";
@@ -21,13 +21,14 @@ const defaultTheme = {
   bg: "", border: "", accent: "", text: "", bubble: 46,
   bgRaw: "", borderRaw: "", accentRaw: "", textRaw: ""
 };
-const defaultFeatures = { summarize: true, translate: true, proofread: true, rewrite: true, write: true };
+const defaultFeatures = { summarize: true, translate: true, proofread: true, rewrite: true, write: true, pageinsight: true };
 const defaultPaneState = {
   summarize: { input: "", opts: { summaryMode: "words", words: 120, length: "medium" } },
   translate: { input: "", opts: { lang: "en" } },
   proofread: { input: "", opts: {} },
   rewrite: { input: "", opts: { mode: "paragraph" } },
   write: { input: "", opts: { tone: "neutral" } },
+  pageinsight: { input: "", opts: { summaryMode: "length", length: "medium", words: 200 } },
 };
 const MIN_DRAWER_WIDTH = 560;
 const MIN_DRAWER_HEIGHT = 400;
@@ -53,6 +54,7 @@ const FEATURES_META = {
   proofread: { icon: "\u25CE", label: "Proofread", desc: "Fix grammar & spelling" },
   rewrite: { icon: "\u21BA", label: "Rewrite", desc: "Restructure & rephrase" },
   write: { icon: "\u270E", label: "Write", desc: "Generate from a prompt" },
+  pageinsight: { icon: "\u2295", label: "Page Insight", desc: "Summarize this page's content" },
 };
 
 const AI_MODE_META = {
@@ -161,6 +163,33 @@ function formatLastUpdated(timestamp) {
     return new Date(timestamp).toLocaleString();
   } catch {
     return "No data yet";
+  }
+}
+
+function scrapePageContent() {
+  const noisy = new Set(["SCRIPT", "STYLE", "NAV", "HEADER", "FOOTER", "ASIDE", "NOSCRIPT", "IFRAME", "BUTTON", "SELECT"]);
+  const contentEl =
+    document.querySelector("article") ||
+    document.querySelector("[role='main']") ||
+    document.querySelector("main") ||
+    document.body;
+
+  function getText(node) {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
+    if (noisy.has(node.tagName)) return "";
+    if (node.id === "fai-root-mount") return "";
+    if (node.getAttribute?.("aria-hidden") === "true") return "";
+    const isBlock = /^(P|DIV|H[1-6]|LI|TD|TH|BLOCKQUOTE|PRE|SECTION|ARTICLE|MAIN|DETAILS|SUMMARY)$/.test(node.tagName);
+    const parts = Array.from(node.childNodes).map(getText).join("");
+    return isBlock ? `\n${parts}\n` : parts;
+  }
+
+  try {
+    const raw = getText(contentEl || document.body);
+    return raw.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  } catch {
+    return "";
   }
 }
 
@@ -679,9 +708,9 @@ function App() {
   const runOp = async (op, text, opts, { skipFallbackPrompt = false } = {}) => {
     lastRunRef.current = { op, text, opts };
     setFallbackNotice(null);
-    if (!text?.trim()) { setStatusMsg("Please enter some text."); setTimeout(() => setStatusMsg(""), 2000); return; }
+    if (op !== "pageinsight" && !text?.trim()) { setStatusMsg("Please enter some text."); setTimeout(() => setStatusMsg(""), 2000); return; }
     const token = ++runTokenRef.current;
-    const labels = { summarize: "Summarizing", translate: "Translating", proofread: "Proofreading", rewrite: "Rewriting", write: "Writing" };
+    const labels = { summarize: "Summarizing", translate: "Translating", proofread: "Proofreading", rewrite: "Rewriting", write: "Writing", pageinsight: "Analyzing page" };
     setStatusMsg(`${labels[op] || "Processing"}...`, true);
     setResults([]);
     try {
@@ -715,6 +744,14 @@ function App() {
       }
       else if (op === "write") {
         const res = await write(text, { tone: opts.tone || "neutral" });
+        result = res?.text || "";
+        meta = res?.meta || null;
+      }
+      else if (op === "pageinsight") {
+        const pageText = scrapePageContent();
+        if (!pageText || pageText.length < 50) throw new Error("Could not extract readable content from this page.");
+        const summaryOpts = opts.summaryMode === "length" ? { length: opts.length } : { words: opts.words };
+        const res = await summarize(pageText, summaryOpts);
         result = res?.text || "";
         meta = res?.meta || null;
       }
@@ -1247,9 +1284,17 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
         {aiMode === "best_effort" && (
           <div className="fai-quota-card" style={{ marginTop: 12 }}>
             <div className="fai-quota-title">Best Effort order</div>
-            <div className="hint" style={{ marginTop: 8 }}>1. Gemini - {selectedAccuracyModel.label}</div>
-            <div className="hint">2. Groq - {selectedSpeedModel.label}</div>
-            <div className="hint">3. OpenRouter - openrouter/free</div>
+            <div className="hint" style={{ marginTop: 8 }}>1. Gemini</div>
+            <div className="hint" style={{ marginTop: 4 }}>2. Groq — all models, your selected model first:</div>
+            {[speedModel, ...SPEED_MODEL_OPTIONS.map((o) => o.value).filter((v) => v !== speedModel)].map((v) => {
+              const meta = SPEED_MODEL_OPTIONS.find((o) => o.value === v);
+              return (
+                <div key={v} className="hint" style={{ paddingLeft: 14 }}>
+                  {"\u2022"} {meta?.label || v}{v === speedModel ? " \u00B7 selected" : ""}
+                </div>
+              );
+            })}
+            <div className="hint" style={{ marginTop: 4 }}>3. OpenRouter \u00B7 openrouter/free</div>
             <div className="hint" style={{ marginTop: 8 }}>Saved keys: Gemini <b>{apiKeys.gemini ? "yes" : "no"}</b> \u00B7 Groq <b>{apiKeys.groq ? "yes" : "no"}</b> \u00B7 OpenRouter <b>{apiKeys.openrouter ? "yes" : "no"}</b></div>
           </div>
         )}
@@ -1311,7 +1356,7 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
           {Object.keys(features).map(key => (
             <label key={key} className="fai-toggle-item">
               <input type="checkbox" checked={!!features[key]} disabled={enabledCount === 1 && !!features[key]} onChange={e => setFeatures({ ...features, [key]: e.target.checked })} />
-              <span>{FEATURES_META[key]?.icon || ""} {key[0].toUpperCase() + key.slice(1)}</span>
+              <span>{FEATURES_META[key]?.icon || ""} {FEATURES_META[key]?.label || (key[0].toUpperCase() + key.slice(1))}</span>
             </label>
           ))}
         </div>
@@ -1411,28 +1456,79 @@ function Pane({ active, draft, onDraftChange, onRun }) {
         </select>
       </label>
     ),
+    pageinsight: (
+      <div className="fai-opts-group">
+        <div className="fai-segment" role="group" aria-label="Summary mode">
+          <button
+            type="button"
+            className={`fai-segment-btn${opts.summaryMode === "words" ? " active" : ""}`}
+            aria-pressed={opts.summaryMode === "words"}
+            onClick={() => setOpts({ ...opts, summaryMode: "words" })}>
+            By words
+          </button>
+          <button
+            type="button"
+            className={`fai-segment-btn${opts.summaryMode === "length" ? " active" : ""}`}
+            aria-pressed={opts.summaryMode === "length"}
+            onClick={() => setOpts({ ...opts, summaryMode: "length" })}>
+            By length
+          </button>
+        </div>
+        {opts.summaryMode === "words" ? (
+          <label className="fai-opt-label">
+            Target words
+            <input type="number" className="fai-opt-input fai-opt-input--num"
+              min="30" max="800" value={opts.words}
+              onChange={e => setOpts({ ...opts, words: Number(e.target.value) || 30 })} />
+          </label>
+        ) : (
+          <label className="fai-opt-label">
+            Length
+            <select className="fai-select fai-opt-select" value={opts.length}
+              onChange={e => setOpts({ ...opts, length: e.target.value })}>
+              <option value="short">Short</option>
+              <option value="medium">Medium</option>
+              <option value="long">Long</option>
+            </select>
+          </label>
+        )}
+      </div>
+    ),
   }[active];
 
   return (
     <div className="fai-pane">
       <div className="fai-opts-bar">{OptsUI}</div>
-      <textarea
-        className="fai-input"
-        value={input}
-        onChange={(e) => onDraftChange({ input: e.target.value })}
-        placeholder={active === "write" ? "Describe what you want written..." : "Paste or type your text here..."}
-        disabled={busy}
-      />
+      {active === "pageinsight" ? (
+        <div className="fai-page-info-card">
+          <div className="fai-page-info-icon">{"\u2295"}</div>
+          <div className="fai-page-info-body">
+            <div className="fai-page-info-title">{document.title || "Untitled page"}</div>
+            <div className="fai-page-info-domain">
+              {(() => { try { return new URL(window.location.href).hostname; } catch { return window.location.hostname || ""; } })()}
+            </div>
+          </div>
+          <div className="fai-page-info-badge">Live</div>
+        </div>
+      ) : (
+        <textarea
+          className="fai-input"
+          value={input}
+          onChange={(e) => onDraftChange({ input: e.target.value })}
+          placeholder={active === "write" ? "Describe what you want written..." : "Paste or type your text here..."}
+          disabled={busy}
+        />
+      )}
       <motion.button
         className={`fai-run-btn${busy ? " fai-run-btn--busy" : ""}`}
         onClick={run}
         disabled={busy}
-        aria-label={`Run ${active}`}
+        aria-label={active === "pageinsight" ? "Analyze page" : `Run ${active}`}
         whileTap={!busy ? { scale: 0.97 } : {}}
         whileHover={!busy ? { scale: 1.01 } : {}}>
         {busy
-          ? <><span className="fai-spinner" />Processing...</>
-          : <>Run {"\u203A"}</>}
+          ? <><span className="fai-spinner" />{active === "pageinsight" ? "Analyzing..." : "Processing..."}</>
+          : <>{active === "pageinsight" ? "Analyze Page" : "Run"} {"\u203A"}</>}
       </motion.button>
     </div>
   );

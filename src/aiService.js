@@ -5,6 +5,7 @@ import {
   DEFAULT_GROQ_MODEL,
   getGroqModelLabel,
   getGroqModelOption,
+  GROQ_MODEL_OPTIONS,
   GPT_OSS_MODELS,
   OPENROUTER_FREE_MODEL,
 } from "./providerCatalog";
@@ -199,8 +200,15 @@ function buildBestEffortError(failures) {
   if (!failures.length) return new Error("Best Effort could not run because no provider key is saved.");
   if (failures.length === 1) return new Error(failures[0].message);
 
-  const summary = failures
-    .map((failure) => `${PROVIDER_META[failure.provider]?.label || failure.provider}: ${trimErrorMessage(failure.message)}`)
+  // Deduplicate: keep only the last failure per provider to avoid noisy repeated Groq entries
+  const byProvider = {};
+  for (const f of failures) byProvider[f.provider] = f;
+  const deduped = Object.values(byProvider);
+
+  if (deduped.length === 1) return new Error(deduped[0].message);
+
+  const summary = deduped
+    .map((f) => `${PROVIDER_META[f.provider]?.label || f.provider}: ${trimErrorMessage(f.message)}`)
     .join(" | ");
   return new Error(`Best Effort exhausted all saved providers. ${summary}`);
 }
@@ -443,17 +451,30 @@ async function runTextWithProvider(provider, apiKey, prompt, options = {}) {
 }
 
 function getBestEffortAttempts(runtime) {
-  return [
-    runtime.geminiApiKey
-      ? { provider: "gemini", apiKey: runtime.geminiApiKey, model: runtime.accuracyModel }
-      : null,
-    runtime.groqApiKey
-      ? { provider: "groq", apiKey: runtime.groqApiKey, model: runtime.speedModel }
-      : null,
-    runtime.openrouterApiKey
-      ? { provider: "openrouter", apiKey: runtime.openrouterApiKey, model: OPENROUTER_FREE_MODEL }
-      : null,
-  ].filter(Boolean);
+  const attempts = [];
+
+  if (runtime.geminiApiKey) {
+    attempts.push({ provider: "gemini", apiKey: runtime.geminiApiKey, model: runtime.accuracyModel });
+  }
+
+  if (runtime.groqApiKey) {
+    // Expand all Groq models — each has its own separate TPM/RPD quota bucket.
+    // User's selected model goes first, then the remaining catalog models in order.
+    const allGroqModels = GROQ_MODEL_OPTIONS.map((opt) => opt.value);
+    const orderedGroqModels = [
+      runtime.speedModel,
+      ...allGroqModels.filter((m) => m !== runtime.speedModel),
+    ];
+    for (const model of orderedGroqModels) {
+      attempts.push({ provider: "groq", apiKey: runtime.groqApiKey, model });
+    }
+  }
+
+  if (runtime.openrouterApiKey) {
+    attempts.push({ provider: "openrouter", apiKey: runtime.openrouterApiKey, model: OPENROUTER_FREE_MODEL });
+  }
+
+  return attempts;
 }
 
 async function runBestEffortText(runtime, prompt, options = {}) {

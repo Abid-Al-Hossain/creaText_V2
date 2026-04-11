@@ -1212,3 +1212,75 @@
   background: var(--fai-border-hi);
   border-radius: 4px;
 }
+
+/* ===================== PAGE INSIGHT CARD ===================== */
+.fai-page-info-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+  background: var(--fai-field-bg);
+  border: 1px solid var(--fai-border);
+  border-left: 3px solid var(--fai-accent-strong);
+  border-radius: var(--fai-radius-sm);
+  flex-shrink: 0;
+  transition: border-color .2s;
+}
+.fai-page-info-card:hover {
+  border-color: var(--fai-border-hi);
+  border-left-color: var(--fai-accent);
+}
+.fai-page-info-icon {
+  font-size: 26px;
+  line-height: 1;
+  color: var(--fai-accent);
+  flex-shrink: 0;
+  opacity: .85;
+}
+.fai-page-info-body {
+  flex: 1;
+  min-width: 0;
+}
+.fai-page-info-title {
+  font: 600 13px/1.4 var(--fai-font);
+  color: var(--fai-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fai-page-info-domain {
+  font: 400 11px/1.4 var(--fai-font);
+  color: var(--fai-text-muted);
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fai-page-info-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  background: color-mix(in srgb, var(--fai-accent) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--fai-accent) 28%, transparent);
+  border-radius: 999px;
+  font: 600 10px var(--fai-font);
+  color: var(--fai-accent);
+  letter-spacing: .4px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.fai-page-info-badge::before {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--fai-accent);
+  animation: fai-live-pulse 2s ease-in-out infinite;
+}
+@keyframes fai-live-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.35; transform: scale(0.8); }
+}
