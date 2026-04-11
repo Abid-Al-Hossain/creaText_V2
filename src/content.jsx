@@ -230,7 +230,7 @@ function splitMarkdownRow(line) {
 
 function isMarkdownTableSeparator(line) {
   const cells = splitMarkdownRow(line);
-  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")));
+  return cells.length > 0 && cells.every((cell) => /^:?-+:?$/.test(cell.replace(/\s+/g, "")));
 }
 
 function normalizeMarkdownCell(cell) {
@@ -241,28 +241,42 @@ function normalizeMarkdownCell(cell) {
     .trim();
 }
 
-function parseMarkdownTable(text) {
+function parseMarkdownBlocks(text) {
   const lines = String(text || "")
     .trim()
     .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+    .map((line) => line.trim());
 
-  if (lines.length < 3 || !lines[0].includes("|") || !isMarkdownTableSeparator(lines[1])) return null;
+  const blocks = [];
+  let currentText = [];
+  let i = 0;
 
-  const headers = splitMarkdownRow(lines[0]).map(normalizeMarkdownCell);
-  if (headers.length < 2) return null;
+  while (i < lines.length) {
+    if (lines[i].includes("|") && i + 1 < lines.length && isMarkdownTableSeparator(lines[i + 1])) {
+      if (currentText.length > 0) {
+        blocks.push({ type: "text", content: currentText.join("\n").trim() });
+        currentText = [];
+      }
+      const headers = splitMarkdownRow(lines[i]).map(normalizeMarkdownCell);
+      i += 2; // Skip header and separator
+      const rows = [];
+      while (i < lines.length && lines[i].includes("|")) {
+        const cells = splitMarkdownRow(lines[i]).map(normalizeMarkdownCell);
+        rows.push(headers.map((_, idx) => cells[idx] || ""));
+        i++;
+      }
+      blocks.push({ type: "table", headers, rows });
+    } else {
+      currentText.push(lines[i]);
+      i++;
+    }
+  }
 
-  const rows = lines
-    .slice(2)
-    .filter((line) => line.includes("|"))
-    .map((line) => {
-      const cells = splitMarkdownRow(line).map(normalizeMarkdownCell);
-      return headers.map((_, idx) => cells[idx] || "");
-    });
+  if (currentText.length > 0) {
+    blocks.push({ type: "text", content: currentText.join("\n").trim() });
+  }
 
-  if (!rows.length) return null;
-  return { headers, rows };
+  return blocks;
 }
 
 /* ------------ Color Swatch ------------ */
@@ -328,7 +342,7 @@ function ColorModal({ open, label, value, rawValue, onLive, onConfirm, onClear, 
 /* ------------ Result Card ------------ */
 function ResultCard({ text, meta }) {
   const [copied, setCopied] = useState(false);
-  const table = parseMarkdownTable(text);
+  const blocks = parseMarkdownBlocks(text);
   const handleCopy = async () => {
     const ok = await copyToClipboard(text);
     if (ok) { setCopied(true); setTimeout(() => setCopied(false), 2000); }
@@ -342,26 +356,33 @@ function ResultCard({ text, meta }) {
           Responded via <b>{getResultModelLabel(meta)}</b>
         </div>
       )}
-      {table ? (
-        <div className="fai-result-table-wrap">
-          <table className="fai-result-table">
-            <thead>
-              <tr>
-                {table.headers.map((header) => <th key={header}>{header}</th>)}
-              </tr>
-            </thead>
-            <tbody>
-              {table.rows.map((row, rowIndex) => (
-                <tr key={rowIndex}>
-                  {row.map((cell, cellIndex) => <td key={`${rowIndex}-${cellIndex}`}>{cell}</td>)}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <div className="fai-result-text">{text}</div>
-      )}
+      {blocks.map((block, idx) => {
+        if (block.type === "table") {
+          return (
+            <div key={`block-${idx}`} className="fai-result-table-wrap" style={idx > 0 ? { marginTop: 12 } : {}}>
+              <table className="fai-result-table">
+                <thead>
+                  <tr>
+                    {block.headers.map((header, hIdx) => <th key={hIdx}>{header}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {block.rows.map((row, rIdx) => (
+                    <tr key={rIdx}>
+                      {row.map((cell, cIdx) => <td key={cIdx}>{cell}</td>)}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        }
+        return (
+          <div key={`block-${idx}`} className="fai-result-text" style={idx > 0 ? { marginTop: 12 } : {}}>
+            {block.content}
+          </div>
+        );
+      })}
       <button className={`fai-copy-btn${copied ? " fai-copy-btn--copied" : ""}`}
         onClick={handleCopy} title="Copy to clipboard" aria-label="Copy result">
         {copied ? "Copied" : "Copy"}

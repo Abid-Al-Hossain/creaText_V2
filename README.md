@@ -36,6 +36,7 @@ Each user supplies their own provider keys. There is no shared backend and no sh
 - Honest provider fallback behavior instead of fake success states
 - Raw Groq quota snapshots from provider headers, with no invented countdown logic
 - Independent format and tone controls on Rewrite and Page Insight
+- Robust markdown parser that supports multiple tables interleaved with text
 
 ## Provider Modes
 
