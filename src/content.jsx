@@ -1,4 +1,4 @@
-// src/content.jsx
+﻿// src/content.jsx
 import stylesText from "./style.css?inline";
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { createRoot } from "react-dom/client";
@@ -31,6 +31,12 @@ const defaultPaneState = {
 };
 const MIN_DRAWER_WIDTH = 560;
 const MIN_DRAWER_HEIGHT = 400;
+const MIN_EDITOR_PANE_HEIGHT = 180;
+const MIN_RESULTS_PANE_HEIGHT = 140;
+const SPLITTER_HEIGHT = 12;
+const MIN_SIDE_EDITOR_WIDTH = 320;
+const MIN_SIDE_RESULTS_WIDTH = 300;
+const SIDE_SPLITTER_SIZE = 12;
 
 const THEME_PRESETS = {
   default:  { bg: "rgba(13,17,28,.98)",    border: "rgba(255,255,255,.09)", accent: "#818cf8", text: "#e2e8f0" },
@@ -162,9 +168,72 @@ function getSpeedModelLabel(value) {
   return (SPEED_MODEL_OPTIONS.find((option) => option.value === value) || {}).label || value || "Groq";
 }
 
+function getAccuracyModelLabel(value) {
+  return (ACCURACY_MODEL_OPTIONS.find((option) => option.value === value) || {}).label || value || "Gemini";
+}
+
+function getProviderLabel(provider) {
+  if (provider === "openrouter") return "OpenRouter";
+  if (provider === "groq") return "Groq";
+  return "Gemini";
+}
+
+function getResultModelLabel(meta) {
+  if (!meta?.model) return getProviderLabel(meta?.provider);
+  if (meta.provider === "groq") return `${getProviderLabel(meta.provider)} \u00B7 ${getSpeedModelLabel(meta.model)}`;
+  if (meta.provider === "gemini") return `${getProviderLabel(meta.provider)} \u00B7 ${getAccuracyModelLabel(meta.model)}`;
+  return `${getProviderLabel(meta.provider)} \u00B7 ${meta.model}`;
+}
+
 function getGroqQuotaHint(groqQuota) {
   if (!groqQuota) return "";
   return "Groq exposes separate counters in response headers: requests are organization-level RPD, tokens are TPM. These reset hints are independent, so one timer reaching zero does not mean all requests are blocked or unlocked.";
+}
+
+function splitMarkdownRow(line) {
+  return String(line || "")
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function isMarkdownTableSeparator(line) {
+  const cells = splitMarkdownRow(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")));
+}
+
+function normalizeMarkdownCell(cell) {
+  return String(cell || "")
+    .replace(/^\*\*(.*?)\*\*$/u, "$1")
+    .replace(/^__(.*?)__$/u, "$1")
+    .replace(/`([^`]+)`/gu, "$1")
+    .trim();
+}
+
+function parseMarkdownTable(text) {
+  const lines = String(text || "")
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length < 3 || !lines[0].includes("|") || !isMarkdownTableSeparator(lines[1])) return null;
+
+  const headers = splitMarkdownRow(lines[0]).map(normalizeMarkdownCell);
+  if (headers.length < 2) return null;
+
+  const rows = lines
+    .slice(2)
+    .filter((line) => line.includes("|"))
+    .map((line) => {
+      const cells = splitMarkdownRow(line).map(normalizeMarkdownCell);
+      return headers.map((_, idx) => cells[idx] || "");
+    });
+
+  if (!rows.length) return null;
+  return { headers, rows };
 }
 
 /* ------------ Color Swatch ------------ */
@@ -228,8 +297,9 @@ function ColorModal({ open, label, value, rawValue, onLive, onConfirm, onClear, 
 }
 
 /* ------------ Result Card ------------ */
-function ResultCard({ text }) {
+function ResultCard({ text, meta }) {
   const [copied, setCopied] = useState(false);
+  const table = parseMarkdownTable(text);
   const handleCopy = async () => {
     const ok = await copyToClipboard(text);
     if (ok) { setCopied(true); setTimeout(() => setCopied(false), 2000); }
@@ -238,7 +308,31 @@ function ResultCard({ text }) {
     <motion.div className="fai-result"
       initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
       transition={SPRING_SOFT}>
-      <div className="fai-result-text">{text}</div>
+      {meta?.bestEffort && (
+        <div className="fai-result-meta">
+          Responded via <b>{getResultModelLabel(meta)}</b>
+        </div>
+      )}
+      {table ? (
+        <div className="fai-result-table-wrap">
+          <table className="fai-result-table">
+            <thead>
+              <tr>
+                {table.headers.map((header) => <th key={header}>{header}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {table.rows.map((row, rowIndex) => (
+                <tr key={rowIndex}>
+                  {row.map((cell, cellIndex) => <td key={`${rowIndex}-${cellIndex}`}>{cell}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="fai-result-text">{text}</div>
+      )}
       <button className={`fai-copy-btn${copied ? " fai-copy-btn--copied" : ""}`}
         onClick={handleCopy} title="Copy to clipboard" aria-label="Copy result">
         {copied ? "Copied" : "Copy"}
@@ -265,16 +359,37 @@ function App() {
   const [results, setResults]         = useState([]);
   const [showSettings, setShowSettings] = useState(false);
   const [drafts, setDrafts]           = useState(defaultPaneState);
+  const [paneHeight, setPaneHeight]   = useState(320);
+  const [sidePaneWidth, setSidePaneWidth] = useState(520);
+  const [hiddenWidePane, setHiddenWidePane] = useState(null);
 
   const setStatusMsg = (text, loading = false) => setStatus({ text, loading });
   const drawerRef = useRef(null);
+  const workspaceRef = useRef(null);
   const runTokenRef = useRef(0);
   const activeRef = useRef(active);
   const showSettingsRef = useRef(showSettings);
   const lastRunRef = useRef(null);
+  const splitDragRef = useRef(null);
+  const sideSplitDragRef = useRef(null);
+  const useSideBySideResults = results.length > 0 && (pos.width || defaultPos.width) >= 1040;
+  const isInputPaneHidden = useSideBySideResults && hiddenWidePane === "input";
+  const isOutputPaneHidden = useSideBySideResults && hiddenWidePane === "output";
+  const showInputPane = !useSideBySideResults || !isInputPaneHidden;
+  const showOutputPane = results.length > 0 && (!useSideBySideResults || !isOutputPaneHidden);
 
   useEffect(() => { activeRef.current = active; }, [active]);
   useEffect(() => { showSettingsRef.current = showSettings; }, [showSettings]);
+
+  const getClampedSidePaneWidth = useCallback((nextWidth) => {
+    const workspace = workspaceRef.current;
+    if (!workspace) return nextWidth;
+    const maxWidth = Math.max(
+      MIN_SIDE_EDITOR_WIDTH,
+      workspace.clientWidth - SIDE_SPLITTER_SIZE - MIN_SIDE_RESULTS_WIDTH
+    );
+    return clamp(nextWidth, MIN_SIDE_EDITOR_WIDTH, maxWidth);
+  }, []);
 
   useEffect(() => {
     const handler = (msg) => {
@@ -378,6 +493,22 @@ function App() {
     return () => window.removeEventListener("resize", clampToViewport);
   }, [open, setPos]);
 
+  useEffect(() => {
+    if (showSettings || !results.length || useSideBySideResults) return;
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    const available = workspace.clientHeight - SPLITTER_HEIGHT;
+    const maxPaneHeight = Math.max(MIN_EDITOR_PANE_HEIGHT, available - MIN_RESULTS_PANE_HEIGHT);
+    const nextHeight = clamp(paneHeight, MIN_EDITOR_PANE_HEIGHT, maxPaneHeight);
+    if (nextHeight !== paneHeight) setPaneHeight(nextHeight);
+  }, [paneHeight, pos.height, results.length, showSettings, useSideBySideResults]);
+
+  useEffect(() => {
+    if (!useSideBySideResults || showSettings || hiddenWidePane) return;
+    const nextWidth = getClampedSidePaneWidth(sidePaneWidth);
+    if (nextWidth !== sidePaneWidth) setSidePaneWidth(nextWidth);
+  }, [getClampedSidePaneWidth, hiddenWidePane, pos.width, results.length, showSettings, sidePaneWidth, useSideBySideResults]);
+
   const onDragStart = (e) => {
     if (e.target.closest(".fai-actions")) return;
     const target = e.currentTarget;
@@ -473,6 +604,55 @@ function App() {
     window.removeEventListener("pointerup", onResizeEnd);
   };
 
+  const onPaneSplitMove = (e) => {
+    const drag = splitDragRef.current;
+    const workspace = workspaceRef.current;
+    if (!drag || !workspace) return;
+    const available = workspace.clientHeight - SPLITTER_HEIGHT;
+    const maxPaneHeight = Math.max(MIN_EDITOR_PANE_HEIGHT, available - MIN_RESULTS_PANE_HEIGHT);
+    const nextHeight = clamp(drag.startHeight + (e.clientY - drag.startY), MIN_EDITOR_PANE_HEIGHT, maxPaneHeight);
+    setPaneHeight(nextHeight);
+  };
+  const onPaneSplitEnd = () => {
+    splitDragRef.current = null;
+    window.removeEventListener("pointermove", onPaneSplitMove);
+    window.removeEventListener("pointerup", onPaneSplitEnd);
+  };
+  const onPaneSplitStart = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!workspaceRef.current) return;
+    splitDragRef.current = { startY: e.clientY, startHeight: paneHeight };
+    window.addEventListener("pointermove", onPaneSplitMove);
+    window.addEventListener("pointerup", onPaneSplitEnd);
+  };
+
+  const onSideSplitMove = (e) => {
+    const drag = sideSplitDragRef.current;
+    if (!drag) return;
+    setSidePaneWidth(getClampedSidePaneWidth(drag.startWidth + (e.clientX - drag.startX)));
+  };
+  const onSideSplitEnd = () => {
+    sideSplitDragRef.current = null;
+    window.removeEventListener("pointermove", onSideSplitMove);
+    window.removeEventListener("pointerup", onSideSplitEnd);
+  };
+  const onSideSplitStart = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!workspaceRef.current || hiddenWidePane) return;
+    sideSplitDragRef.current = { startX: e.clientX, startWidth: sidePaneWidth };
+    window.addEventListener("pointermove", onSideSplitMove);
+    window.addEventListener("pointerup", onSideSplitEnd);
+  };
+
+  const hideWidePane = (pane) => {
+    setHiddenWidePane(pane);
+  };
+  const restoreWidePanes = () => {
+    setHiddenWidePane(null);
+  };
+
   const bubble      = Number(theme.bubble) || 46;
   const presetClass = (preset && preset !== "custom" && preset !== "default") ? `theme-${preset}` : "";
   const activeMeta  = FEATURES_META[active] || {};
@@ -539,7 +719,7 @@ function App() {
       }
 
       if (token !== runTokenRef.current || activeRef.current !== op || showSettingsRef.current) return;
-      setResults([{ id: Date.now(), text: result }]);
+      setResults([{ id: Date.now(), text: result, meta }]);
       if (meta?.bestEffort && meta?.attempted?.length) {
         const providerLabel = meta.provider === "openrouter" ? "OpenRouter" : meta.provider === "groq" ? "Groq" : "Gemini";
         setStatusMsg(`Best Effort finished via ${providerLabel}.`, false);
@@ -604,6 +784,9 @@ function App() {
     if (fallbackNotice?.kind === "switch-model") return switchToScoutAndRetry();
     return runWithSpeedFallback();
   };
+  const stopKeyPropagation = (e) => {
+    e.stopPropagation();
+  };
 
   return !enabledReady || !enabled ? null : (
     <AnimatePresence mode="wait">
@@ -625,6 +808,8 @@ function App() {
         <motion.div key="drawer"
           ref={drawerRef}
           className={`fai-drawer ${presetClass}`}
+          onKeyDownCapture={stopKeyPropagation}
+          onKeyUpCapture={stopKeyPropagation}
           initial={{ opacity: 0, scale: 0.96, y: 18 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: 14 }}
@@ -684,10 +869,10 @@ function App() {
             <div className="fai-sidebar-footer">
               <span className="fai-sidebar-badge">
                 {aiMode === "accuracy"
-                  ? `Accuracy · ${accuracyModelMeta.shortLabel}`
+                  ? `Accuracy \u00B7 ${accuracyModelMeta.shortLabel}`
                   : aiMode === "speed"
-                    ? `Speed · ${speedModelMeta.shortLabel}`
-                    : "Best Effort · Auto"}
+                    ? `Speed \u00B7 ${speedModelMeta.shortLabel}`
+                    : "Best Effort \u00B7 Auto"}
               </span>
             </div>
           </div>
@@ -712,34 +897,150 @@ function App() {
                     <div className="fai-feature-desc">{activeMeta.desc}</div>
                   </div>
                 </div>
-                <Pane
-                  active={active}
-                  draft={drafts[active] || defaultPaneState[active]}
-                  onDraftChange={(next) => updateDraft(active, next)}
-                  onRun={(input, opts) => runOp(active, input, opts)}
-                />
+                <div className={`fai-workspace${useSideBySideResults ? " fai-workspace--split" : ""}`} ref={workspaceRef}>
+                  {showInputPane && (
+                    <div
+                      className="fai-pane-shell"
+                      style={useSideBySideResults
+                        ? hiddenWidePane
+                          ? undefined
+                          : { flex: `0 0 ${getClampedSidePaneWidth(sidePaneWidth)}px`, width: getClampedSidePaneWidth(sidePaneWidth) }
+                        : results.length > 0
+                          ? { height: paneHeight, flex: "0 0 auto" }
+                          : undefined}>
+                      <div className={`fai-panel-shell${useSideBySideResults ? " fai-panel-shell--side" : ""}`}>
+                        {useSideBySideResults && (
+                          <div className="fai-panel-head">
+                            <span className="fai-panel-title">Input</span>
+                            <div className="fai-panel-actions">
+                              <button
+                                type="button"
+                                className="fai-panel-btn"
+                                onClick={() => hideWidePane("input")}
+                                title="Hide input panel">
+                                Hide
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                        <Pane
+                          active={active}
+                          draft={drafts[active] || defaultPaneState[active]}
+                          onDraftChange={(next) => updateDraft(active, next)}
+                          onRun={(input, opts) => runOp(active, input, opts)}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <AnimatePresence>
+                    {results.length > 0 && !useSideBySideResults && (
+                      <motion.div
+                        className="fai-pane-splitter"
+                        onPointerDown={onPaneSplitStart}
+                        title="Resize input and output sections"
+                        aria-hidden="true"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.15 }}>
+                        <span className="fai-pane-splitter-grip" />
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
+                  {useSideBySideResults && results.length > 0 && showInputPane && showOutputPane && (
+                    <div
+                      className="fai-pane-splitter fai-pane-splitter--vertical"
+                      onPointerDown={onSideSplitStart}
+                      title="Resize input and output panels"
+                      aria-hidden="true">
+                      <span className="fai-pane-splitter-grip fai-pane-splitter-grip--vertical" />
+                    </div>
+                  )}
+
+                  {useSideBySideResults && results.length > 0 && isInputPaneHidden && (
+                    <div className="fai-pane-collapsed-rail fai-pane-collapsed-rail--left">
+                      <button
+                        type="button"
+                        className="fai-pane-restore-btn"
+                        onClick={restoreWidePanes}
+                        title="Show input panel">
+                        Input
+                      </button>
+                    </div>
+                  )}
+
+                  {useSideBySideResults && results.length > 0 && isOutputPaneHidden && (
+                    <div className="fai-pane-collapsed-rail fai-pane-collapsed-rail--right">
+                      <button
+                        type="button"
+                        className="fai-pane-restore-btn"
+                        onClick={restoreWidePanes}
+                        title="Show output panel">
+                        Output
+                      </button>
+                    </div>
+                  )}
+
+                  <AnimatePresence>
+                    {showOutputPane && (
+                      useSideBySideResults ? (
+                        <motion.div
+                          className="fai-results-shell"
+                          aria-live="polite"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          transition={{ duration: 0.2 }}>
+                          <div className="fai-panel-head fai-panel-head--results">
+                            <span className="fai-panel-title">Output</span>
+                            <div className="fai-panel-actions">
+                              <button
+                                type="button"
+                                className="fai-panel-btn"
+                                onClick={() => hideWidePane("output")}
+                                title="Hide output panel">
+                                Hide
+                              </button>
+                            </div>
+                          </div>
+                          <div className="fai-results fai-results--side">
+                            {results.map(r => <ResultCard key={r.id} text={r.text} meta={r.meta} />)}
+                          </div>
+                        </motion.div>
+                      ) : (
+                        <motion.div className="fai-results" aria-live="polite"
+                          initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                          transition={{ duration: 0.2 }}>
+                          {results.map(r => <ResultCard key={r.id} text={r.text} meta={r.meta} />)}
+                        </motion.div>
+                      )
+                    )}
+                  </AnimatePresence>
+                </div>
               </>
             )}
-
-            <AnimatePresence>
-              {results.length > 0 && (
-                <motion.div className="fai-results" aria-live="polite"
-                  initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                  transition={{ duration: 0.2 }}>
-                  {results.map(r => <ResultCard key={r.id} text={r.text} />)}
-                </motion.div>
-              )}
-            </AnimatePresence>
 
             <AnimatePresence>
               {fallbackNotice && (
                 <motion.div className="fai-fallback-banner"
                   initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: 6 }} transition={{ duration: 0.18 }}>
-                  <span>{fallbackNotice.text}</span>
-                  <button type="button" className="fai-fallback-btn" onClick={handleFallbackAction}>
-                    {fallbackNotice.actionLabel}
-                  </button>
+                  <span className="fai-fallback-text">{fallbackNotice.text}</span>
+                  <div className="fai-fallback-actions">
+                    <button type="button" className="fai-fallback-btn" onClick={handleFallbackAction}>
+                      {fallbackNotice.actionLabel}
+                    </button>
+                    <button
+                      type="button"
+                      className="fai-fallback-close"
+                      onClick={() => setFallbackNotice(null)}
+                      aria-label="Dismiss notice"
+                      title="Dismiss notice">
+                      {"\u00D7"}
+                    </button>
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -928,7 +1229,7 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
                     </div>
                   </div>
                   <div className="hint" style={{ marginTop: 8 }}>Raw header snapshot only. No countdowns or predictions are inferred by the extension.</div>
-                  <div className="hint" style={{ marginTop: 8 }}>Snapshot model: <b>{getGroqModelLabel(groqQuota.model || selectedSpeedModel.value)}</b> · Updated {formatLastUpdated(groqQuota.updatedAt)}</div>
+                  <div className="hint" style={{ marginTop: 8 }}>Snapshot model: <b>{getGroqModelLabel(groqQuota.model || selectedSpeedModel.value)}</b> \u00B7 Updated {formatLastUpdated(groqQuota.updatedAt)}</div>
                 </>
               ) : (
                 <div className="hint">Run one request in Speed mode to load live Groq quota from response headers.</div>
@@ -942,7 +1243,7 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
             <div className="hint" style={{ marginTop: 8 }}>1. Gemini - {selectedAccuracyModel.label}</div>
             <div className="hint">2. Groq - {selectedSpeedModel.label}</div>
             <div className="hint">3. OpenRouter - openrouter/free</div>
-            <div className="hint" style={{ marginTop: 8 }}>Saved keys: Gemini <b>{apiKeys.gemini ? "yes" : "no"}</b> · Groq <b>{apiKeys.groq ? "yes" : "no"}</b> · OpenRouter <b>{apiKeys.openrouter ? "yes" : "no"}</b></div>
+            <div className="hint" style={{ marginTop: 8 }}>Saved keys: Gemini <b>{apiKeys.gemini ? "yes" : "no"}</b> \u00B7 Groq <b>{apiKeys.groq ? "yes" : "no"}</b> \u00B7 OpenRouter <b>{apiKeys.openrouter ? "yes" : "no"}</b></div>
           </div>
         )}
       </div>
@@ -1080,15 +1381,15 @@ function Pane({ active, draft, onDraftChange, onRun }) {
     ),
     rewrite: (
       <label className="fai-opt-label">
-        Mode
+        Rewrite style
         <select className="fai-select fai-opt-select" value={opts.mode}
           onChange={e => setOpts({ ...opts, mode: e.target.value })}>
-          <option value="key-points">Key Points</option>
-          <option value="paragraph">New Paragraph</option>
-          <option value="table">Table</option>
-          <option value="tone:formal">Tone: Formal</option>
-          <option value="tone:neutral">Tone: Neutral</option>
-          <option value="tone:casual">Tone: Casual</option>
+            <option value="key-points">Key Points</option>
+            <option value="paragraph">New Paragraph</option>
+            <option value="table">Table</option>
+            <option value="tone:formal">Formal</option>
+            <option value="tone:neutral">Neutral</option>
+            <option value="tone:casual">Casual</option>
         </select>
       </label>
     ),
@@ -1148,5 +1449,6 @@ function Pane({ active, draft, onDraftChange, onRun }) {
   document.documentElement.appendChild(host);
   createRoot(mount).render(<App />);
 })();
+
 
 

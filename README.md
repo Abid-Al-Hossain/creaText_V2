@@ -24,6 +24,9 @@ Each user supplies their own provider keys. There is no shared backend and no sh
 
 - Floating draggable panel injected into any normal webpage
 - Resizable drawer with edge and corner resize handles
+- Wide-layout split view with side-by-side input/output panels
+- Vertical splitter for resizing input/output width in wide mode
+- Hide/show controls for input and output panels
 - Shadow DOM UI isolation so host-page CSS cannot break the layout
 - Per-tool draft preservation while switching tools
 - Built-in themes plus custom color mode
@@ -125,6 +128,9 @@ content.jsx -> aiBuiltins.js -> bg.js / aiService.js -> provider API -> UI resul
 
 - The widget mounts inside a Shadow DOM host so host-page CSS does not override extension styles.
 - The drawer can be moved independently from the page and resized from edges or corners.
+- Wide layouts show input on the left and output on the right for easier comparison.
+- The wide layout includes a draggable vertical splitter to adjust panel width.
+- Either panel can be hidden and restored from a slim rail when you need maximum width.
 - The active tool remains consistent while dragging.
 - Theme tokens now drive the full shell, sidebar, inputs, dropdowns, cards, and action states.
 - Tool drafts persist across tool switches and settings navigation.
@@ -184,6 +190,12 @@ npm run build
 - Paste the source text
 - Run the tool
 
+### Output panel
+
+- Use the vertical splitter to widen the output when tables are wide
+- Hide the input panel to make the output full width
+- Restore a hidden panel from the rail on the edge
+
 ### Translate
 
 - Paste the text
@@ -199,7 +211,7 @@ npm run build
 ### Rewrite
 
 - Paste the text
-- Pick the rewrite mode
+- Pick the rewrite style
 - Run the tool
 
 ### Write
