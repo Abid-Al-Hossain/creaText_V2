@@ -8,11 +8,12 @@ CreaText is built for practical writing work inside the browser:
 - Proofread
 - Rewrite
 - Write
+- Page Insight
 
 It supports three provider modes:
 - `Accuracy` -> Gemini
 - `Speed` -> Groq
-- `Best Effort` -> Gemini, then Groq, then OpenRouter
+- `Best Effort` -> Gemini, then exhausts all Groq models, then OpenRouter
 
 ## Overview
 
@@ -69,9 +70,9 @@ These are intentionally curated for a text utility product. The project does not
 
 Best Effort is not "failureless". It is a fallback chain intended to improve completion rate:
 
-1. Try Gemini
-2. If that fails for a technical reason, try Groq
-3. If that fails for a technical reason, try OpenRouter `openrouter/free`
+1. Try your selected Gemini model
+2. If that fails for a technical reason, exhaust **all available Groq models** (starting with your selected model)
+3. If all Groq attempts fail for a technical reason, try OpenRouter `openrouter/free`
 
 Best Effort does not silently route around policy or safety refusals.
 
@@ -219,6 +220,13 @@ npm run build
 - Describe what you want generated
 - Pick the tone
 - Run the tool
+
+### Page Insight
+
+- Navigate to any article or webpage
+- Open the Page Insight tool
+- The extension automatically identifies and summarizes the page's core content
+- Review the analysis results in the output panel
 
 ## Product Rules
 
