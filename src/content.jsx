@@ -372,11 +372,12 @@ function App() {
   const lastRunRef = useRef(null);
   const splitDragRef = useRef(null);
   const sideSplitDragRef = useRef(null);
-  const useSideBySideResults = results.length > 0 && (pos.width || defaultPos.width) >= 1040;
+  const hasResults = results.length > 0;
+  const useSideBySideResults = (pos.width || defaultPos.width) >= 1040;
   const isInputPaneHidden = useSideBySideResults && hiddenWidePane === "input";
   const isOutputPaneHidden = useSideBySideResults && hiddenWidePane === "output";
   const showInputPane = !useSideBySideResults || !isInputPaneHidden;
-  const showOutputPane = results.length > 0 && (!useSideBySideResults || !isOutputPaneHidden);
+  const showOutputPane = !useSideBySideResults || !isOutputPaneHidden;
 
   useEffect(() => { activeRef.current = active; }, [active]);
   useEffect(() => { showSettingsRef.current = showSettings; }, [showSettings]);
@@ -494,20 +495,20 @@ function App() {
   }, [open, setPos]);
 
   useEffect(() => {
-    if (showSettings || !results.length || useSideBySideResults) return;
+    if (showSettings || useSideBySideResults) return;
     const workspace = workspaceRef.current;
     if (!workspace) return;
     const available = workspace.clientHeight - SPLITTER_HEIGHT;
     const maxPaneHeight = Math.max(MIN_EDITOR_PANE_HEIGHT, available - MIN_RESULTS_PANE_HEIGHT);
     const nextHeight = clamp(paneHeight, MIN_EDITOR_PANE_HEIGHT, maxPaneHeight);
     if (nextHeight !== paneHeight) setPaneHeight(nextHeight);
-  }, [paneHeight, pos.height, results.length, showSettings, useSideBySideResults]);
+  }, [paneHeight, pos.height, showSettings, useSideBySideResults]);
 
   useEffect(() => {
     if (!useSideBySideResults || showSettings || hiddenWidePane) return;
     const nextWidth = getClampedSidePaneWidth(sidePaneWidth);
     if (nextWidth !== sidePaneWidth) setSidePaneWidth(nextWidth);
-  }, [getClampedSidePaneWidth, hiddenWidePane, pos.width, results.length, showSettings, sidePaneWidth, useSideBySideResults]);
+  }, [getClampedSidePaneWidth, hiddenWidePane, pos.width, showSettings, sidePaneWidth, useSideBySideResults]);
 
   const onDragStart = (e) => {
     if (e.target.closest(".fai-actions")) return;
@@ -934,7 +935,7 @@ function App() {
                   )}
 
                   <AnimatePresence>
-                    {results.length > 0 && !useSideBySideResults && (
+                    {!useSideBySideResults && (
                       <motion.div
                         className="fai-pane-splitter"
                         onPointerDown={onPaneSplitStart}
@@ -949,7 +950,7 @@ function App() {
                     )}
                   </AnimatePresence>
 
-                  {useSideBySideResults && results.length > 0 && showInputPane && showOutputPane && (
+                  {useSideBySideResults && showInputPane && showOutputPane && (
                     <div
                       className="fai-pane-splitter fai-pane-splitter--vertical"
                       onPointerDown={onSideSplitStart}
@@ -959,7 +960,7 @@ function App() {
                     </div>
                   )}
 
-                  {useSideBySideResults && results.length > 0 && isInputPaneHidden && (
+                  {useSideBySideResults && isInputPaneHidden && (
                     <div className="fai-pane-collapsed-rail fai-pane-collapsed-rail--left">
                       <button
                         type="button"
@@ -971,7 +972,7 @@ function App() {
                     </div>
                   )}
 
-                  {useSideBySideResults && results.length > 0 && isOutputPaneHidden && (
+                  {useSideBySideResults && isOutputPaneHidden && (
                     <div className="fai-pane-collapsed-rail fai-pane-collapsed-rail--right">
                       <button
                         type="button"
@@ -1006,14 +1007,20 @@ function App() {
                             </div>
                           </div>
                           <div className="fai-results fai-results--side">
-                            {results.map(r => <ResultCard key={r.id} text={r.text} meta={r.meta} />)}
+                            {hasResults
+                              ? results.map(r => <ResultCard key={r.id} text={r.text} meta={r.meta} />)
+                              : <div className="fai-results-empty">Output will appear here.</div>
+                            }
                           </div>
                         </motion.div>
                       ) : (
                         <motion.div className="fai-results" aria-live="polite"
                           initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
                           transition={{ duration: 0.2 }}>
-                          {results.map(r => <ResultCard key={r.id} text={r.text} meta={r.meta} />)}
+                          {hasResults
+                            ? results.map(r => <ResultCard key={r.id} text={r.text} meta={r.meta} />)
+                            : <div className="fai-results-empty">Output will appear here.</div>
+                          }
                         </motion.div>
                       )
                     )}
@@ -1184,7 +1191,7 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
             <div className="fai-settings-row" style={{ marginTop: 10 }}>
               <label className="fai-settings-label">Model</label>
               <select value={accuracyModel} onChange={e => setAccuracyModel(e.target.value)} className="fai-select" aria-label="Accuracy model">
-                {ACCURACY_MODEL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                {ACCURACY_MODEL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.pickerLabel || option.label}</option>)}
               </select>
             </div>
             <div className="hint" style={{ marginTop: 8 }}>{selectedAccuracyModel.note}</div>
@@ -1196,7 +1203,7 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
             <div className="fai-settings-row" style={{ marginTop: 10 }}>
               <label className="fai-settings-label">Model</label>
               <select value={speedModel} onChange={e => setSpeedModel(e.target.value)} className="fai-select" aria-label="Speed model">
-                {SPEED_MODEL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                {SPEED_MODEL_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.pickerLabel || option.label}</option>)}
               </select>
             </div>
             <div className="hint" style={{ marginTop: 8 }}>{selectedSpeedModel.note}</div>

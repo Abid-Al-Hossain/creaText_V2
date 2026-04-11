@@ -54,14 +54,14 @@ Uses Groq with a user-selectable model.
 
 Curated Groq models in this project:
 
-- `GPT-OSS 20B`
-  Best for quick everyday text tasks. Supports JSON Schema.
 - `GPT-OSS 120B`
-  Best Groq-side quality for harder text tasks. Has tighter TPM limits.
-- `Llama 4 Scout`
-  Best fit for longer inputs on free Groq limits. Supports JSON Schema.
+  Most powerful option here. Has tighter TPM limits on free Groq.
 - `Llama 3.3 70B`
-  Good multilingual text model. Uses JSON object mode.
+  Strong all-round text model. Uses JSON object mode.
+- `Llama 4 Scout`
+  Recommended for longer inputs on free Groq limits. Supports JSON Schema.
+- `GPT-OSS 20B`
+  Recommended speed option for quick everyday text tasks. Supports JSON Schema.
 
 These are intentionally curated for a text utility product. The project does not expose every Groq model just because it exists.
 

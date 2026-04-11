@@ -617,6 +617,13 @@
   flex: 1;
   min-height: 140px;
 }
+.fai-results-empty {
+  margin: auto;
+  color: var(--fai-text-muted);
+  font: 500 12px/1.6 var(--fai-font);
+  text-align: center;
+  padding: 20px 0;
+}
 .fai-results-shell {
   flex: 1;
   min-width: 0;
