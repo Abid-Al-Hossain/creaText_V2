@@ -26,9 +26,9 @@ const defaultPaneState = {
   summarize: { input: "", opts: { summaryMode: "words", words: 120, length: "medium" } },
   translate: { input: "", opts: { lang: "en" } },
   proofread: { input: "", opts: {} },
-  rewrite: { input: "", opts: { mode: "paragraph" } },
+  rewrite: { input: "", opts: { format: "paragraph", tone: "neutral" } },
   write: { input: "", opts: { tone: "neutral" } },
-  pageinsight: { input: "", opts: { summaryMode: "length", length: "medium", words: 200 } },
+  pageinsight: { input: "", opts: { summaryMode: "length", length: "medium", words: 200, format: "paragraph", tone: "neutral" } },
 };
 const MIN_DRAWER_WIDTH = 560;
 const MIN_DRAWER_HEIGHT = 400;
@@ -738,7 +738,7 @@ function App() {
         meta = res?.meta || null;
       }
       else if (op === "rewrite") {
-        const res = await rewrite(text, opts.mode || "paragraph");
+        const res = await rewrite(text, { format: opts.format || "paragraph", tone: opts.tone || "neutral" });
         result = res?.text || "";
         meta = res?.meta || null;
       }
@@ -751,7 +751,7 @@ function App() {
         const pageText = scrapePageContent();
         if (!pageText || pageText.length < 50) throw new Error("Could not extract readable content from this page.");
         const summaryOpts = opts.summaryMode === "length" ? { length: opts.length } : { words: opts.words };
-        const res = await summarize(pageText, summaryOpts);
+        const res = await summarize(pageText, { ...summaryOpts, format: opts.format || "paragraph", tone: opts.tone || "neutral" });
         result = res?.text || "";
         meta = res?.meta || null;
       }
@@ -1432,18 +1432,28 @@ function Pane({ active, draft, onDraftChange, onRun }) {
       <span className="fai-opts-hint">Checks grammar, spelling &amp; punctuation automatically</span>
     ),
     rewrite: (
-      <label className="fai-opt-label">
-        Rewrite style
-        <select className="fai-select fai-opt-select" value={opts.mode}
-          onChange={e => setOpts({ ...opts, mode: e.target.value })}>
-            <option value="key-points">Key Points</option>
-            <option value="paragraph">New Paragraph</option>
+      <div className="fai-opts-group">
+        <label className="fai-opt-label">
+          Format
+          <select className="fai-select fai-opt-select" value={opts.format || "paragraph"}
+            onChange={e => setOpts({ ...opts, format: e.target.value })}>
+            <option value="paragraph">Paragraph</option>
+            <option value="points">Bullet Points</option>
             <option value="table">Table</option>
-            <option value="tone:formal">Formal</option>
-            <option value="tone:neutral">Neutral</option>
-            <option value="tone:casual">Casual</option>
-        </select>
-      </label>
+            <option value="tldr">TL;DR</option>
+          </select>
+        </label>
+        <span className="fai-opts-sep">&middot;</span>
+        <label className="fai-opt-label">
+          Tone
+          <select className="fai-select fai-opt-select" value={opts.tone || "neutral"}
+            onChange={e => setOpts({ ...opts, tone: e.target.value })}>
+            <option value="formal">Formal</option>
+            <option value="neutral">Neutral</option>
+            <option value="casual">Casual</option>
+          </select>
+        </label>
+      </div>
     ),
     write: (
       <label className="fai-opt-label">
@@ -1492,6 +1502,27 @@ function Pane({ active, draft, onDraftChange, onRun }) {
             </select>
           </label>
         )}
+        <span className="fai-opts-sep">&middot;</span>
+        <label className="fai-opt-label">
+          Format
+          <select className="fai-select fai-opt-select" value={opts.format || "paragraph"}
+            onChange={e => setOpts({ ...opts, format: e.target.value })}>
+            <option value="paragraph">Paragraph</option>
+            <option value="points">Bullet Points</option>
+            <option value="table">Table</option>
+            <option value="tldr">TL;DR</option>
+          </select>
+        </label>
+        <span className="fai-opts-sep">&middot;</span>
+        <label className="fai-opt-label">
+          Tone
+          <select className="fai-select fai-opt-select" value={opts.tone || "neutral"}
+            onChange={e => setOpts({ ...opts, tone: e.target.value })}>
+            <option value="formal">Formal</option>
+            <option value="neutral">Neutral</option>
+            <option value="casual">Casual</option>
+          </select>
+        </label>
       </div>
     ),
   }[active];

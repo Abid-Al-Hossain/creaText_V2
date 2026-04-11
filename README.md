@@ -35,6 +35,7 @@ Each user supplies their own provider keys. There is no shared backend and no sh
 - Structured proofread output where the provider supports it
 - Honest provider fallback behavior instead of fake success states
 - Raw Groq quota snapshots from provider headers, with no invented countdown logic
+- Independent format and tone controls on Rewrite and Page Insight
 
 ## Provider Modes
 
@@ -212,7 +213,9 @@ npm run build
 ### Rewrite
 
 - Paste the text
-- Pick the rewrite style
+- Pick the output **Format**: Paragraph, Bullet Points, Table, or TL;DR
+- Pick the output **Tone**: Formal, Neutral, or Casual
+- Any format and tone combination works independently
 - Run the tool
 
 ### Write
@@ -225,7 +228,10 @@ npm run build
 
 - Navigate to any article or webpage
 - Open the Page Insight tool
-- The extension automatically identifies and summarizes the page's core content
+- Choose summary **Length** (Short, Medium, Long) or target **Word count**
+- Pick the output **Format**: Paragraph, Bullet Points, Table, or TL;DR
+- Pick the output **Tone**: Formal, Neutral, or Casual
+- Click **Analyze Page** — the extension scrapes and summarizes automatically
 - Review the analysis results in the output panel
 
 ## Product Rules

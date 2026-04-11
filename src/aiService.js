@@ -549,8 +549,15 @@ async function generateText(prompt, options = {}) {
   }
 }
 
-async function summarize(text, { words, length } = {}) {
-  const hint =
+const SUMMARIZE_FORMAT_HINT = {
+  paragraph: "Format the summary as a clean, flowing paragraph.",
+  points:    "Format the summary as concise bullet points (use * as the bullet marker).",
+  table:     "Format the summary as a Markdown table with two columns: Topic and Detail.",
+  tldr:      "Format the summary as a single ultra-brief TL;DR sentence, prefixed with \"TL;DR:\".",
+};
+
+async function summarize(text, { words, length, format, tone } = {}) {
+  const lengthHint =
     typeof words === "number" && words > 0
       ? `in approximately ${words} words`
       : length === "short"
@@ -559,8 +566,11 @@ async function summarize(text, { words, length } = {}) {
           ? "in a detailed, thorough paragraph"
           : "in a concise paragraph (4-6 sentences)";
 
+  const formatHint = SUMMARIZE_FORMAT_HINT[format] || SUMMARIZE_FORMAT_HINT.paragraph;
+  const toneHint   = REWRITE_TONE_HINTS[tone]      || "";
+
   return generateText(
-    `Summarize the following text ${hint}. Return only the summary with no preamble or labels:\n\n${text}`
+    `Summarize the following text ${lengthHint}. ${formatHint}${toneHint ? ` ${toneHint}` : ""} Return only the summary with no preamble or labels:\n\n${text}`
   );
 }
 
@@ -703,24 +713,26 @@ async function proofread(text) {
   };
 }
 
-const REWRITE_PROMPTS = {
-  paragraph:
-    "Rewrite the following text as a clean, well-structured paragraph. Preserve the core meaning. Return only the rewritten text:",
-  "key-points":
-    "Extract and list the key points from the following text as concise bullet points (use * as bullet). Return only the bullet list:",
-  table:
-    "Convert the following text into a concise Markdown table with clear column headers. Return only the Markdown table:",
-  "tone:formal":
-    "Rewrite the following text in a formal, professional tone. Preserve meaning. Return only the rewritten text:",
-  "tone:neutral":
-    "Rewrite the following text in a neutral, clear tone. Preserve meaning. Return only the rewritten text:",
-  "tone:casual":
-    "Rewrite the following text in a casual, friendly, conversational tone. Return only the rewritten text:",
+const REWRITE_FORMAT_PROMPTS = {
+  paragraph: "Rewrite the following text as a clean, well-structured paragraph. Preserve the core meaning.",
+  points:    "Rewrite the following text as concise bullet points (use * as the bullet marker). Preserve the core meaning.",
+  table:     "Convert the following text into a concise Markdown table with clear column headers.",
+  tldr:      "Condense the following text into a single TL;DR sentence, prefixed with \"TL;DR:\".",
 };
 
-async function rewrite(text, mode = "paragraph") {
-  const prompt = REWRITE_PROMPTS[mode] || REWRITE_PROMPTS.paragraph;
-  return generateText(`${prompt}\n\n${text}`, { temperature: 0.6 });
+const REWRITE_TONE_HINTS = {
+  formal:  "Use a formal, professional tone.",
+  neutral: "Use a neutral, clear tone.",
+  casual:  "Use a casual, friendly, conversational tone.",
+};
+
+async function rewrite(text, { format = "paragraph", tone = "neutral" } = {}) {
+  const formatInstruction = REWRITE_FORMAT_PROMPTS[format] || REWRITE_FORMAT_PROMPTS.paragraph;
+  const toneInstruction   = REWRITE_TONE_HINTS[tone]   || REWRITE_TONE_HINTS.neutral;
+  return generateText(
+    `${formatInstruction} ${toneInstruction} Return only the rewritten text:\n\n${text}`,
+    { temperature: 0.6 }
+  );
 }
 
 async function write(taskPrompt, { tone = "neutral" } = {}) {
@@ -760,7 +772,7 @@ export async function handleAiMessage(message) {
     if (op === "summarize") return summarize(text, options);
     if (op === "translate") return translate(text, options);
     if (op === "proofread") return proofread(text);
-    if (op === "rewrite") return rewrite(text, options?.mode);
+    if (op === "rewrite") return rewrite(text, options);
     if (op === "write") return write(text, options);
     throw new Error("Unknown AI operation.");
   }
