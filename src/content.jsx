@@ -91,6 +91,44 @@ const AI_MODE_META = {
 };
 const SPRING_SNAPPY = { type: "spring", stiffness: 320, damping: 24 };
 const SPRING_SOFT   = { type: "spring", stiffness: 220, damping: 22 };
+const SPRING_PANEL  = { type: "spring", stiffness: 260, damping: 28 };
+const COMMON_TRANSLATION_LANGUAGES = [
+  { value: "ar", label: "Arabic" },
+  { value: "bn", label: "Bengali" },
+  { value: "zh", label: "Chinese" },
+  { value: "zh-CN", label: "Chinese (Simplified)" },
+  { value: "zh-TW", label: "Chinese (Traditional)" },
+  { value: "cs", label: "Czech" },
+  { value: "da", label: "Danish" },
+  { value: "nl", label: "Dutch" },
+  { value: "en", label: "English" },
+  { value: "fi", label: "Finnish" },
+  { value: "fr", label: "French" },
+  { value: "de", label: "German" },
+  { value: "el", label: "Greek" },
+  { value: "he", label: "Hebrew" },
+  { value: "hi", label: "Hindi" },
+  { value: "hu", label: "Hungarian" },
+  { value: "id", label: "Indonesian" },
+  { value: "it", label: "Italian" },
+  { value: "ja", label: "Japanese" },
+  { value: "ko", label: "Korean" },
+  { value: "ms", label: "Malay" },
+  { value: "no", label: "Norwegian" },
+  { value: "fa", label: "Persian" },
+  { value: "pl", label: "Polish" },
+  { value: "pt", label: "Portuguese" },
+  { value: "pt-BR", label: "Portuguese (Brazil)" },
+  { value: "ro", label: "Romanian" },
+  { value: "ru", label: "Russian" },
+  { value: "es", label: "Spanish" },
+  { value: "sv", label: "Swedish" },
+  { value: "th", label: "Thai" },
+  { value: "tr", label: "Turkish" },
+  { value: "uk", label: "Ukrainian" },
+  { value: "ur", label: "Urdu" },
+  { value: "vi", label: "Vietnamese" },
+].sort((left, right) => left.label.localeCompare(right.label));
 
 /* ------------ Storage hook ------------ */
 function useStorage(key, initial) {
@@ -217,6 +255,16 @@ function getResultModelLabel(meta) {
 function getGroqQuotaHint(groqQuota) {
   if (!groqQuota) return "";
   return "Groq exposes separate counters in response headers: requests are organization-level RPD, tokens are TPM. These reset hints are independent, so one timer reaching zero does not mean all requests are blocked or unlocked.";
+}
+
+function getTranslationLanguageOption(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return null;
+  return (
+    COMMON_TRANSLATION_LANGUAGES.find((option) => option.value.toLowerCase() === normalized) ||
+    COMMON_TRANSLATION_LANGUAGES.find((option) => option.label.toLowerCase() === normalized) ||
+    null
+  );
 }
 
 function splitMarkdownRow(line) {
@@ -412,6 +460,7 @@ function App() {
   const [paneHeight, setPaneHeight]   = useState(320);
   const [sidePaneWidth, setSidePaneWidth] = useState(520);
   const [hiddenWidePane, setHiddenWidePane] = useState(null);
+  const [closingWidePane, setClosingWidePane] = useState(null);
 
   const setStatusMsg = (text, loading = false) => setStatus({ text, loading });
   const drawerRef = useRef(null);
@@ -426,8 +475,13 @@ function App() {
   const useSideBySideResults = (pos.width || defaultPos.width) >= 1040;
   const isInputPaneHidden = useSideBySideResults && hiddenWidePane === "input";
   const isOutputPaneHidden = useSideBySideResults && hiddenWidePane === "output";
-  const showInputPane = !useSideBySideResults || !isInputPaneHidden;
-  const showOutputPane = !useSideBySideResults || !isOutputPaneHidden;
+  const showInputPane = !useSideBySideResults || hiddenWidePane !== "input" || closingWidePane?.pane === "input";
+  const showOutputPane = !useSideBySideResults || hiddenWidePane !== "output" || closingWidePane?.pane === "output";
+  const clearOutput = () => {
+    setResults([]);
+    setStatusMsg("");
+    setFallbackNotice(null);
+  };
 
   useEffect(() => { activeRef.current = active; }, [active]);
   useEffect(() => { showSettingsRef.current = showSettings; }, [showSettings]);
@@ -441,6 +495,11 @@ function App() {
     );
     return clamp(nextWidth, MIN_SIDE_EDITOR_WIDTH, maxWidth);
   }, []);
+  const wideInputWidth = getClampedSidePaneWidth(sidePaneWidth);
+  const wideOutputWidth = Math.max(
+    MIN_SIDE_RESULTS_WIDTH,
+    (pos.width || defaultPos.width) - wideInputWidth - SIDE_SPLITTER_SIZE - 32
+  );
 
   useEffect(() => {
     const handler = (msg) => {
@@ -698,9 +757,15 @@ function App() {
   };
 
   const hideWidePane = (pane) => {
-    setHiddenWidePane(pane);
+    if (!workspaceRef.current || !useSideBySideResults) return;
+    setClosingWidePane({
+      pane,
+      inputWidth: wideInputWidth,
+      outputWidth: wideOutputWidth,
+    });
   };
   const restoreWidePanes = () => {
+    setClosingWidePane(null);
     setHiddenWidePane(null);
   };
 
@@ -956,17 +1021,39 @@ function App() {
                     <div className="fai-feature-desc">{activeMeta.desc}</div>
                   </div>
                 </div>
-                <div className={`fai-workspace${useSideBySideResults ? " fai-workspace--split" : ""}`} ref={workspaceRef}>
+                <motion.div
+                  layout
+                  className={`fai-workspace${useSideBySideResults ? " fai-workspace--split" : ""}`}
+                  ref={workspaceRef}
+                  transition={SPRING_SOFT}>
+                  <AnimatePresence initial={false}>
                   {showInputPane && (
-                    <div
+                    <motion.div
+                      layout
                       className="fai-pane-shell"
                       style={useSideBySideResults
-                        ? hiddenWidePane
-                          ? undefined
-                          : { flex: `0 0 ${getClampedSidePaneWidth(sidePaneWidth)}px`, width: getClampedSidePaneWidth(sidePaneWidth) }
+                        ? closingWidePane
+                          ? { flex: `0 0 ${closingWidePane.inputWidth}px`, width: closingWidePane.inputWidth }
+                          : hiddenWidePane
+                            ? undefined
+                            : { flex: `0 0 ${wideInputWidth}px`, width: wideInputWidth }
                         : results.length > 0
                           ? { height: paneHeight, flex: "0 0 auto" }
-                          : undefined}>
+                          : undefined}
+                      initial={useSideBySideResults ? { opacity: 0, x: -28 } : { opacity: 0, y: 10 }}
+                      animate={useSideBySideResults && closingWidePane?.pane === "input"
+                        ? { opacity: 0, x: -36, width: 0, minWidth: 0, flexBasis: 0 }
+                        : { opacity: 1, x: 0, y: 0 }}
+                      exit={useSideBySideResults
+                        ? { opacity: 0, x: -36, width: 0, minWidth: 0, flexBasis: 0 }
+                        : { opacity: 0, y: -10 }}
+                      onAnimationComplete={() => {
+                        if (closingWidePane?.pane === "input") {
+                          setHiddenWidePane("input");
+                          setClosingWidePane(null);
+                        }
+                      }}
+                      transition={SPRING_PANEL}>
                       <div className={`fai-panel-shell${useSideBySideResults ? " fai-panel-shell--side" : ""}`}>
                         {useSideBySideResults && (
                           <div className="fai-panel-head">
@@ -989,12 +1076,14 @@ function App() {
                           onRun={(input, opts) => runOp(active, input, opts)}
                         />
                       </div>
-                    </div>
+                    </motion.div>
                   )}
+                  </AnimatePresence>
 
-                  <AnimatePresence>
+                  <AnimatePresence initial={false}>
                     {!useSideBySideResults && (
                       <motion.div
+                        layout
                         className="fai-pane-splitter"
                         onPointerDown={onPaneSplitStart}
                         title="Resize input and output sections"
@@ -1008,18 +1097,32 @@ function App() {
                     )}
                   </AnimatePresence>
 
+                  <AnimatePresence initial={false}>
                   {useSideBySideResults && showInputPane && showOutputPane && (
-                    <div
+                    <motion.div
+                      layout
                       className="fai-pane-splitter fai-pane-splitter--vertical"
                       onPointerDown={onSideSplitStart}
                       title="Resize input and output panels"
-                      aria-hidden="true">
+                      aria-hidden="true"
+                      initial={{ opacity: 0, scaleY: 0.85 }}
+                      animate={{ opacity: 1, scaleY: 1 }}
+                      exit={{ opacity: 0, scaleY: 0.85 }}
+                      transition={SPRING_PANEL}>
                       <span className="fai-pane-splitter-grip fai-pane-splitter-grip--vertical" />
-                    </div>
+                    </motion.div>
                   )}
+                  </AnimatePresence>
 
-                  {useSideBySideResults && isInputPaneHidden && (
-                    <div className="fai-pane-collapsed-rail fai-pane-collapsed-rail--left">
+                  <AnimatePresence initial={false}>
+                  {useSideBySideResults && isInputPaneHidden && closingWidePane?.pane !== "input" && (
+                    <motion.div
+                      layout
+                      className="fai-pane-collapsed-rail fai-pane-collapsed-rail--left"
+                      initial={{ opacity: 0, x: -18 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: -18 }}
+                      transition={SPRING_PANEL}>
                       <button
                         type="button"
                         className="fai-pane-restore-btn"
@@ -1027,11 +1130,19 @@ function App() {
                         title="Show input panel">
                         Input
                       </button>
-                    </div>
+                    </motion.div>
                   )}
+                  </AnimatePresence>
 
-                  {useSideBySideResults && isOutputPaneHidden && (
-                    <div className="fai-pane-collapsed-rail fai-pane-collapsed-rail--right">
+                  <AnimatePresence initial={false}>
+                  {useSideBySideResults && isOutputPaneHidden && closingWidePane?.pane !== "output" && (
+                    <motion.div
+                      layout
+                      className="fai-pane-collapsed-rail fai-pane-collapsed-rail--right"
+                      initial={{ opacity: 0, x: 18 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: 18 }}
+                      transition={SPRING_PANEL}>
                       <button
                         type="button"
                         className="fai-pane-restore-btn"
@@ -1039,22 +1150,43 @@ function App() {
                         title="Show output panel">
                         Output
                       </button>
-                    </div>
+                    </motion.div>
                   )}
+                  </AnimatePresence>
 
-                  <AnimatePresence>
+                  <AnimatePresence initial={false}>
                     {showOutputPane && (
                       useSideBySideResults ? (
                         <motion.div
+                          layout
                           className="fai-results-shell"
                           aria-live="polite"
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          exit={{ opacity: 0 }}
-                          transition={{ duration: 0.2 }}>
+                          style={useSideBySideResults && closingWidePane
+                            ? { flex: `0 0 ${closingWidePane.outputWidth}px`, width: closingWidePane.outputWidth }
+                            : undefined}
+                          initial={{ opacity: 0, x: 28 }}
+                          animate={useSideBySideResults && closingWidePane?.pane === "output"
+                            ? { opacity: 0, x: 36, width: 0, minWidth: 0, flexBasis: 0 }
+                            : { opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: 36, width: 0, minWidth: 0, flexBasis: 0 }}
+                          onAnimationComplete={() => {
+                            if (closingWidePane?.pane === "output") {
+                              setHiddenWidePane("output");
+                              setClosingWidePane(null);
+                            }
+                          }}
+                          transition={SPRING_PANEL}>
                           <div className="fai-panel-head fai-panel-head--results">
                             <span className="fai-panel-title">Output</span>
                             <div className="fai-panel-actions">
+                              <button
+                                type="button"
+                                className="fai-panel-btn"
+                                onClick={clearOutput}
+                                disabled={!hasResults}
+                                title="Clear output">
+                                Clear
+                              </button>
                               <button
                                 type="button"
                                 className="fai-panel-btn"
@@ -1072,18 +1204,33 @@ function App() {
                           </div>
                         </motion.div>
                       ) : (
-                        <motion.div className="fai-results" aria-live="polite"
+                        <motion.div layout className="fai-panel-shell" aria-live="polite"
                           initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                          transition={{ duration: 0.2 }}>
-                          {hasResults
-                            ? results.map(r => <ResultCard key={r.id} text={r.text} meta={r.meta} />)
-                            : <div className="fai-results-empty">Output will appear here.</div>
-                          }
+                          transition={SPRING_PANEL}>
+                          <div className="fai-panel-head fai-panel-head--results">
+                            <span className="fai-panel-title">Output</span>
+                            <div className="fai-panel-actions">
+                              <button
+                                type="button"
+                                className="fai-panel-btn"
+                                onClick={clearOutput}
+                                disabled={!hasResults}
+                                title="Clear output">
+                                Clear
+                              </button>
+                            </div>
+                          </div>
+                          <div className="fai-results">
+                            {hasResults
+                              ? results.map(r => <ResultCard key={r.id} text={r.text} meta={r.meta} />)
+                              : <div className="fai-results-empty">Output will appear here.</div>
+                            }
+                          </div>
                         </motion.div>
                       )
                     )}
                   </AnimatePresence>
-                </div>
+                </motion.div>
               </>
             )}
 
@@ -1388,10 +1535,53 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
 /* ------------ Pane ------------ */
 function Pane({ active, draft, onDraftChange, onRun }) {
   const [busy, setBusy] = useState(false);
+  const [translateSearch, setTranslateSearch] = useState("");
+  const [translateMenuOpen, setTranslateMenuOpen] = useState(false);
   const input = draft?.input ?? "";
   const opts = draft?.opts ?? defaultPaneState[active]?.opts ?? {};
+  const translatePickerRef = useRef(null);
 
   const setOpts = (next) => onDraftChange({ opts: next });
+
+  useEffect(() => {
+    if (active !== "translate") {
+      setTranslateSearch("");
+      setTranslateMenuOpen(false);
+    }
+  }, [active]);
+
+  const matchedTranslateLanguage = getTranslationLanguageOption(opts.lang);
+  const translateSearchTerm = translateSearch.trim().toLowerCase();
+  const filteredTranslationLanguages = COMMON_TRANSLATION_LANGUAGES.filter((option) => {
+    if (!translateSearchTerm) return true;
+    return (
+      option.label.toLowerCase().includes(translateSearchTerm) ||
+      option.value.toLowerCase().includes(translateSearchTerm)
+    );
+  });
+
+  useEffect(() => {
+    if (active !== "translate") return;
+    if (!translateSearch.trim() && matchedTranslateLanguage?.label) {
+      setTranslateSearch(matchedTranslateLanguage.label);
+    }
+  }, [active, matchedTranslateLanguage, translateSearch]);
+
+  useEffect(() => {
+    const handlePointerDown = (event) => {
+      if (!translatePickerRef.current?.contains(event.target)) {
+        setTranslateMenuOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, []);
+
+  const applyTranslateSelection = (option) => {
+    setTranslateSearch(option.label);
+    setTranslateMenuOpen(false);
+    setOpts({ ...opts, lang: option.value });
+  };
 
   const run = async () => {
     setBusy(true);
@@ -1442,12 +1632,66 @@ function Pane({ active, draft, onDraftChange, onRun }) {
       </div>
     ),
     translate: (
-      <label className="fai-opt-label">
-        Translate to
-        <input type="text" className="fai-opt-input" style={{ width: 90 }}
-          value={opts.lang} placeholder="e.g. fr, es, bn"
-          onChange={e => setOpts({ ...opts, lang: e.target.value })} />
-      </label>
+      <div className="fai-opts-stack">
+        <div className="fai-opts-section">
+          <div className="fai-opts-section-title">Common Languages</div>
+          <div className="fai-translate-picker" ref={translatePickerRef}>
+            <label className="fai-opt-label">
+              Translate to
+              <input
+                type="text"
+                className="fai-opt-input fai-opt-input--wide"
+                value={translateSearch}
+                placeholder="Search language"
+                onFocus={() => setTranslateMenuOpen(true)}
+                onChange={e => {
+                  const nextValue = e.target.value;
+                  setTranslateSearch(nextValue);
+                  setTranslateMenuOpen(true);
+                  setOpts({ ...opts, lang: nextValue });
+                }}
+              />
+            </label>
+            {translateMenuOpen && (
+              <div className="fai-translate-menu" role="listbox" aria-label="Language options">
+                {filteredTranslationLanguages.length > 0 ? (
+                  filteredTranslationLanguages.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={`fai-translate-option${option.value === matchedTranslateLanguage?.value ? " active" : ""}`}
+                      onPointerDown={(event) => {
+                        event.preventDefault();
+                        applyTranslateSelection(option);
+                      }}>
+                      <span>{option.label}</span>
+                      <span className="fai-translate-option-code">{option.value}</span>
+                    </button>
+                  ))
+                ) : (
+                  <div className="fai-translate-empty">No matching language in the common list.</div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="fai-opts-section">
+          <div className="fai-opts-section-title">Manual Target</div>
+          <div className="fai-opts-row">
+            <label className="fai-opt-label">
+              Language code or name
+              <input
+                type="text"
+                className="fai-opt-input fai-opt-input--wide"
+                value={opts.lang}
+                placeholder="e.g. English, es, Portuguese (Brazil)"
+                onChange={e => setOpts({ ...opts, lang: e.target.value })}
+              />
+            </label>
+          </div>
+          <div className="fai-opts-hint">The picker is a conservative common-language list. Manual entry stays available because providers do not publish one exact shared support matrix.</div>
+        </div>
+      </div>
     ),
     proofread: (
       <span className="fai-opts-hint">Checks grammar, spelling &amp; punctuation automatically</span>
@@ -1488,62 +1732,71 @@ function Pane({ active, draft, onDraftChange, onRun }) {
       </label>
     ),
     pageinsight: (
-      <div className="fai-opts-group">
-        <div className="fai-segment" role="group" aria-label="Summary mode">
-          <button
-            type="button"
-            className={`fai-segment-btn${opts.summaryMode === "words" ? " active" : ""}`}
-            aria-pressed={opts.summaryMode === "words"}
-            onClick={() => setOpts({ ...opts, summaryMode: "words" })}>
-            By words
-          </button>
-          <button
-            type="button"
-            className={`fai-segment-btn${opts.summaryMode === "length" ? " active" : ""}`}
-            aria-pressed={opts.summaryMode === "length"}
-            onClick={() => setOpts({ ...opts, summaryMode: "length" })}>
-            By length
-          </button>
+      <div className="fai-opts-stack">
+        <div className="fai-opts-section">
+          <div className="fai-opts-section-title">Summary Target</div>
+          <div className="fai-opts-row">
+            <div className="fai-segment" role="group" aria-label="Summary mode">
+              <button
+                type="button"
+                className={`fai-segment-btn${opts.summaryMode === "words" ? " active" : ""}`}
+                aria-pressed={opts.summaryMode === "words"}
+                onClick={() => setOpts({ ...opts, summaryMode: "words" })}>
+                By words
+              </button>
+              <button
+                type="button"
+                className={`fai-segment-btn${opts.summaryMode === "length" ? " active" : ""}`}
+                aria-pressed={opts.summaryMode === "length"}
+                onClick={() => setOpts({ ...opts, summaryMode: "length" })}>
+                By length
+              </button>
+            </div>
+            {opts.summaryMode === "words" ? (
+              <label className="fai-opt-label">
+                Target words
+                <input type="number" className="fai-opt-input fai-opt-input--num"
+                  min="30" max="800" value={opts.words}
+                  onChange={e => setOpts({ ...opts, words: Number(e.target.value) || 30 })} />
+              </label>
+            ) : (
+              <label className="fai-opt-label">
+                Length
+                <select className="fai-select fai-opt-select" value={opts.length}
+                  onChange={e => setOpts({ ...opts, length: e.target.value })}>
+                  <option value="short">Short</option>
+                  <option value="medium">Medium</option>
+                  <option value="long">Long</option>
+                </select>
+              </label>
+            )}
+          </div>
         </div>
-        {opts.summaryMode === "words" ? (
-          <label className="fai-opt-label">
-            Target words
-            <input type="number" className="fai-opt-input fai-opt-input--num"
-              min="30" max="800" value={opts.words}
-              onChange={e => setOpts({ ...opts, words: Number(e.target.value) || 30 })} />
-          </label>
-        ) : (
-          <label className="fai-opt-label">
-            Length
-            <select className="fai-select fai-opt-select" value={opts.length}
-              onChange={e => setOpts({ ...opts, length: e.target.value })}>
-              <option value="short">Short</option>
-              <option value="medium">Medium</option>
-              <option value="long">Long</option>
-            </select>
-          </label>
-        )}
-        <span className="fai-opts-sep">&middot;</span>
-        <label className="fai-opt-label">
-          Format
-          <select className="fai-select fai-opt-select" value={opts.format || "paragraph"}
-            onChange={e => setOpts({ ...opts, format: e.target.value })}>
-            <option value="paragraph">Paragraph</option>
-            <option value="points">Bullet Points</option>
-            <option value="table">Table</option>
-            <option value="tldr">TL;DR</option>
-          </select>
-        </label>
-        <span className="fai-opts-sep">&middot;</span>
-        <label className="fai-opt-label">
-          Tone
-          <select className="fai-select fai-opt-select" value={opts.tone || "neutral"}
-            onChange={e => setOpts({ ...opts, tone: e.target.value })}>
-            <option value="formal">Formal</option>
-            <option value="neutral">Neutral</option>
-            <option value="casual">Casual</option>
-          </select>
-        </label>
+
+        <div className="fai-opts-section">
+          <div className="fai-opts-section-title">Presentation</div>
+          <div className="fai-opts-row">
+            <label className="fai-opt-label">
+              Format
+              <select className="fai-select fai-opt-select" value={opts.format || "paragraph"}
+                onChange={e => setOpts({ ...opts, format: e.target.value })}>
+                <option value="paragraph">Paragraph</option>
+                <option value="points">Bullet Points</option>
+                <option value="table">Table</option>
+                <option value="tldr">TL;DR</option>
+              </select>
+            </label>
+            <label className="fai-opt-label">
+              Tone
+              <select className="fai-select fai-opt-select" value={opts.tone || "neutral"}
+                onChange={e => setOpts({ ...opts, tone: e.target.value })}>
+                <option value="formal">Formal</option>
+                <option value="neutral">Neutral</option>
+                <option value="casual">Casual</option>
+              </select>
+            </label>
+          </div>
+        </div>
       </div>
     ),
   }[active];

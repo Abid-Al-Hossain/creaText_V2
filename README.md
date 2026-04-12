@@ -28,6 +28,7 @@ Each user supplies their own provider keys. There is no shared backend and no sh
 - Wide-layout split view with side-by-side input/output panels
 - Vertical splitter for resizing input/output width in wide mode
 - Hide/show controls for input and output panels
+- Shared output header with clear action across tools
 - Shadow DOM UI isolation so host-page CSS cannot break the layout
 - Per-tool draft preservation while switching tools
 - Built-in themes plus custom color mode
@@ -36,6 +37,7 @@ Each user supplies their own provider keys. There is no shared backend and no sh
 - Honest provider fallback behavior instead of fake success states
 - Raw Groq quota snapshots from provider headers, with no invented countdown logic
 - Independent format and tone controls on Rewrite and Page Insight
+- Searchable common-language picker for Translate with manual override
 - Robust markdown parser that supports multiple tables interleaved with text
 
 ## Provider Modes
@@ -198,11 +200,12 @@ npm run build
 - Use the vertical splitter to widen the output when tables are wide
 - Hide the input panel to make the output full width
 - Restore a hidden panel from the rail on the edge
+- Clear previous output from the panel header when needed
 
 ### Translate
 
 - Paste the text
-- Enter the target language code or name
+- Use the searchable language picker or enter a language code/name manually
 - Run the tool
 
 ### Proofread
@@ -232,7 +235,7 @@ npm run build
 - Choose summary **Length** (Short, Medium, Long) or target **Word count**
 - Pick the output **Format**: Paragraph, Bullet Points, Table, or TL;DR
 - Pick the output **Tone**: Formal, Neutral, or Casual
-- Click **Analyze Page** — the extension scrapes and summarizes automatically
+- Click **Analyze Page** - the extension scrapes and summarizes automatically
 - Review the analysis results in the output panel
 
 ## Product Rules

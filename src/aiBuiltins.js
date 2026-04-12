@@ -34,8 +34,13 @@ export function proofread(text) {
   return sendAiMessage({ type: "__ai_run__", op: "proofread", text });
 }
 
-export function rewrite(text, mode = "paragraph") {
-  return sendAiMessage({ type: "__ai_run__", op: "rewrite", text, options: { mode } });
+export function rewrite(text, options = {}) {
+  const normalizedOptions =
+    typeof options === "string"
+      ? { format: options }
+      : options;
+
+  return sendAiMessage({ type: "__ai_run__", op: "rewrite", text, options: normalizedOptions });
 }
 
 export function write(text, options = {}) {
