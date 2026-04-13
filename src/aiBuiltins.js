@@ -128,3 +128,11 @@ export function write(text, options = {}) {
 export function writeStream(text, options = {}, handlers = {}) {
   return streamAiMessage({ type: "__ai_stream_run__", op: "write", text, options }, handlers);
 }
+
+export function pageChat(text, options = {}) {
+  return sendAiMessage({ type: "__ai_run__", op: "pagechat", text, options });
+}
+
+export function pageChatStream(text, options = {}, handlers = {}) {
+  return streamAiMessage({ type: "__ai_stream_run__", op: "pagechat", text, options }, handlers);
+}

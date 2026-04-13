@@ -16,6 +16,14 @@ CreaText V2 is a lightweight AI writing toolkit injected directly into the brows
 - Rewrite text with independent control over format and tone.
 - Write new content from a prompt.
 - Analyze the current page with Page Insight.
+- Ask grounded follow-up questions about the current page in a chat workflow.
+- Use structured page tools behind Page Insight chat for:
+  - exact word and phrase counts
+  - section and passage retrieval
+  - table lookup
+  - Japanese-script token statistics
+  - lightweight entity scanning
+- Show collapsible source excerpts for Page Insight chat answers.
 - Real provider-token streaming for plain-text tools in supported modes.
 - Split-view input/output layout with draggable sizing.
 - Local draft persistence across tools and sessions.
@@ -39,6 +47,28 @@ Uses a fallback chain across saved providers when direct single-provider executi
 
 ---
 
+## Page Insight
+
+Page Insight has two modes:
+
+- `Summary`: summarize the visible page content in the requested format and length.
+- `Ask`: run a grounded chat against the current page only.
+
+The chat mode is not a raw LLM wrapper. It builds a structured page document, runs local analysis tools when needed, and then asks the model to answer from the page content, retrieved evidence, and recent chat turns.
+
+Current Page Insight chat capabilities include:
+
+- conversational page Q&A
+- follow-up question rewriting for short references like `how many are there?`
+- section-aware and passage-aware retrieval
+- exact frequency checks for words and phrases
+- table-aware lookup
+- collapsible source snippets under answers
+
+It does not browse beyond the current page.
+
+---
+
 ## Streaming
 
 True streaming is implemented for plain-text operations where incremental output is safe and useful:
@@ -47,7 +77,7 @@ True streaming is implemented for plain-text operations where incremental output
 - Translate
 - Rewrite
 - Write
-- Page Insight
+- Page Insight chat and summary mode
 
 Structured operations remain non-streaming by design:
 

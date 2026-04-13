@@ -12,7 +12,7 @@ import {
   getGroqModelLabel,
 } from "./providerCatalog";
 import {
-  summarize, summarizeStream, translate, translateStream, extract, rewrite, rewriteStream, proofread, write, writeStream,
+  summarize, summarizeStream, translate, translateStream, extract, rewrite, rewriteStream, proofread, write, writeStream, pageChat, pageChatStream,
   getAiSettings, saveAiSettings,
 } from "./aiBuiltins";
 
@@ -30,7 +30,7 @@ const defaultPaneState = {
   proofread: { input: "", opts: {} },
   rewrite: { input: "", opts: { format: "paragraph", listType: "unordered", listStyle: "dash", tone: "neutral" } },
   write: { input: "", opts: { tone: "neutral" } },
-  pageinsight: { input: "", opts: { summaryMode: "length", length: "medium", words: 200, format: "paragraph", listType: "unordered", listStyle: "dash", tone: "neutral" } },
+  pageinsight: { input: "", opts: { mode: "summary", summaryMode: "length", length: "medium", words: 200, format: "paragraph", listType: "unordered", listStyle: "dash", tone: "neutral", chatLength: "medium" } },
 };
 const MIN_DRAWER_WIDTH = 560;
 const MIN_DRAWER_HEIGHT = 400;
@@ -57,8 +57,16 @@ const FEATURES_META = {
   proofread: { icon: "\u25CE", label: "Proofread", desc: "Fix grammar & spelling" },
   rewrite: { icon: "\u21BA", label: "Rewrite", desc: "Restructure & rephrase" },
   write: { icon: "\u270E", label: "Write", desc: "Generate from a prompt" },
-  pageinsight: { icon: "\u2295", label: "Page Insight", desc: "Summarize this page's content" },
+  pageinsight: { icon: "\u2295", label: "Page Insight", desc: "Summarize or ask about this page" },
 };
+
+const PAGE_CHAT_SUGGESTIONS = [
+  "Summarize the main argument on this page.",
+  "Explain this page in simple terms.",
+  "What are the key facts or claims here?",
+  "What dates, names, or entities matter most?",
+  "What seems unclear, weak, or contradictory on this page?",
+];
 
 const AI_MODE_META = {
   accuracy: {
@@ -240,7 +248,14 @@ function formatLastUpdated(timestamp) {
   }
 }
 
-function scrapePageContent() {
+function normalizePageText(value) {
+  return String(value || "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function scrapePageDocument() {
   const noisy = new Set(["SCRIPT", "STYLE", "NAV", "HEADER", "FOOTER", "ASIDE", "NOSCRIPT", "IFRAME", "BUTTON", "SELECT"]);
   const contentEl =
     document.querySelector("article") ||
@@ -248,22 +263,116 @@ function scrapePageContent() {
     document.querySelector("main") ||
     document.body;
 
-  function getText(node) {
-    if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+  const blocks = [];
+  const headings = [];
+  const sections = [];
+  const tables = [];
+  let currentSection = null;
+
+  const pushSection = () => {
+    if (!currentSection) return;
+    const text = normalizePageText(currentSection.parts.join("\n\n"));
+    if (text) {
+      sections.push({
+        heading: currentSection.heading,
+        level: currentSection.level,
+        text,
+      });
+    }
+    currentSection = null;
+  };
+
+  const appendToSection = (text) => {
+    const normalized = normalizePageText(text);
+    if (!normalized) return;
+    if (!currentSection) {
+      currentSection = { heading: "Page Introduction", level: 0, parts: [] };
+    }
+    currentSection.parts.push(normalized);
+  };
+
+  const walk = (node) => {
+    if (!node) return "";
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent || "";
     if (node.nodeType !== Node.ELEMENT_NODE) return "";
     if (noisy.has(node.tagName)) return "";
     if (node.id === "fai-root-mount") return "";
     if (node.getAttribute?.("aria-hidden") === "true") return "";
-    const isBlock = /^(P|DIV|H[1-6]|LI|TD|TH|BLOCKQUOTE|PRE|SECTION|ARTICLE|MAIN|DETAILS|SUMMARY)$/.test(node.tagName);
-    const parts = Array.from(node.childNodes).map(getText).join("");
-    return isBlock ? `\n${parts}\n` : parts;
-  }
+
+    const tagName = node.tagName;
+    const isHeading = /^H[1-6]$/.test(tagName);
+    const isBlock = /^(P|DIV|LI|TD|TH|BLOCKQUOTE|PRE|SECTION|ARTICLE|MAIN|DETAILS|SUMMARY|UL|OL|DL)$/.test(tagName);
+
+    if (tagName === "TABLE") {
+      const rows = Array.from(node.querySelectorAll("tr"))
+        .map((row) => Array.from(row.querySelectorAll("th,td")).map((cell) => normalizePageText(cell.textContent || "")).filter(Boolean))
+        .filter((cells) => cells.length > 0);
+      if (rows.length) {
+        const firstHeaderRow = rows.find((row) => row.length > 0) || [];
+        const bodyRows = rows.slice(1);
+        const caption = normalizePageText(node.querySelector("caption")?.textContent || "");
+        const tableEntry = {
+          caption,
+          headers: firstHeaderRow,
+          rows: bodyRows,
+        };
+        tables.push(tableEntry);
+        const tableSummary = normalizePageText(
+          [caption, firstHeaderRow.length ? `Columns: ${firstHeaderRow.join(", ")}` : "", bodyRows.length ? `Rows: ${bodyRows.length}` : ""]
+            .filter(Boolean)
+            .join(". ")
+        );
+        if (tableSummary) {
+          blocks.push({ type: "table", text: tableSummary, caption, headers: firstHeaderRow, rowCount: bodyRows.length });
+          appendToSection(tableSummary);
+          return `\n${tableSummary}\n`;
+        }
+      }
+      return "";
+    }
+
+    if (isHeading) {
+      const headingText = normalizePageText(node.textContent || "");
+      if (headingText) {
+        pushSection();
+        const level = Number(tagName.slice(1)) || 0;
+        headings.push({ level, text: headingText });
+        blocks.push({ type: "heading", level, text: headingText });
+        currentSection = { heading: headingText, level, parts: [] };
+      }
+      return "";
+    }
+
+    const parts = Array.from(node.childNodes).map(walk).join("");
+    const normalized = normalizePageText(parts);
+
+    if (normalized && isBlock) {
+      blocks.push({ type: "block", tag: tagName.toLowerCase(), text: normalized });
+      appendToSection(normalized);
+      return `\n${normalized}\n`;
+    }
+
+    return normalized;
+  };
 
   try {
-    const raw = getText(contentEl || document.body);
-    return raw.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+    const raw = walk(contentEl || document.body);
+    pushSection();
+    return {
+      text: normalizePageText(raw),
+      headings,
+      sections,
+      blocks,
+      tables,
+    };
   } catch {
-    return "";
+    return {
+      text: "",
+      headings: [],
+      sections: [],
+      blocks: [],
+      tables: [],
+    };
   }
 }
 
@@ -278,6 +387,7 @@ function getAccuracyModelLabel(value) {
 function getProviderLabel(provider) {
   if (provider === "openrouter") return "OpenRouter";
   if (provider === "groq") return "Groq";
+  if (provider === "local") return "Local";
   return "Gemini";
 }
 
@@ -895,6 +1005,46 @@ function RenderedList({ items, ordered = null }) {
   );
 }
 
+function PageChatThread({ messages }) {
+  const bottomRef = useRef(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ block: "end" });
+  }, [messages]);
+
+  return (
+    <div className="fai-chat-thread">
+      {messages.map((message) => (
+        <div
+          key={message.id}
+          className={`fai-chat-msg fai-chat-msg--${message.role}${message.streaming ? " fai-chat-msg--streaming" : ""}`}>
+          <div className="fai-chat-msg-head">
+            <span className="fai-chat-msg-role">{message.role === "user" ? "You" : "Page AI"}</span>
+            {message.role === "assistant" && message.meta?.provider && (
+              <span className="fai-chat-msg-meta">{getResultModelLabel(message.meta)}</span>
+            )}
+          </div>
+          <div className="fai-chat-msg-body">{message.text}</div>
+          {message.role === "assistant" && Array.isArray(message.meta?.citations) && message.meta.citations.length > 0 && (
+            <details className="fai-chat-sources">
+              <summary className="fai-chat-sources-summary">Sources</summary>
+              <div className="fai-chat-citations">
+                {message.meta.citations.map((citation, index) => (
+                  <div key={`${citation.id}-${index}`} className="fai-chat-citation">
+                    <div className="fai-chat-citation-label">{citation.label || citation.id}</div>
+                    {citation.excerpt && <div className="fai-chat-citation-text">{citation.excerpt}</div>}
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </div>
+      ))}
+      <div ref={bottomRef} className="fai-chat-thread-end" />
+    </div>
+  );
+}
+
 /* ------------ App ------------ */
 function App() {
   const [enabled, setEnabled, enabledReady] = useStorage("enabled", true);
@@ -912,6 +1062,7 @@ function App() {
   const [isRunning, setIsRunning]     = useState(false);
   const [fallbackNotice, setFallbackNotice] = useState(null);
   const [results, setResults]         = useState([]);
+  const [pageChatMessages, setPageChatMessages] = useState([]);
   const [showSettings, setShowSettings] = useState(false);
   const [drafts, setDrafts]           = useState(defaultPaneState);
   const [paneHeight, setPaneHeight]   = useState(320);
@@ -926,10 +1077,16 @@ function App() {
   const streamAbortRef = useRef(null);
   const activeRef = useRef(active);
   const showSettingsRef = useRef(showSettings);
+  const pageChatMessagesRef = useRef(pageChatMessages);
+  const pageContextCacheRef = useRef(null);
   const lastRunRef = useRef(null);
   const splitDragRef = useRef(null);
   const sideSplitDragRef = useRef(null);
+  const pageInsightDraft = drafts.pageinsight || defaultPaneState.pageinsight;
+  const isPageChatMode = active === "pageinsight" && (pageInsightDraft.opts?.mode || "summary") === "chat";
   const hasResults = results.length > 0;
+  const hasChatMessages = pageChatMessages.length > 0;
+  const hasVisibleOutput = hasResults || (isPageChatMode && hasChatMessages);
   const useSideBySideResults = (pos.width || defaultPos.width) >= 1040;
   const isInputPaneHidden = useSideBySideResults && hiddenWidePane === "input";
   const isOutputPaneHidden = useSideBySideResults && hiddenWidePane === "output";
@@ -945,12 +1102,50 @@ function App() {
       revealTimerRef.current = null;
     }
     setResults([]);
+    setPageChatMessages([]);
     setStatusMsg("");
     setFallbackNotice(null);
   };
 
+  const clearPageInsightInputIfChat = useCallback((op) => {
+    if (op !== "pageinsight") return;
+    const currentDraft = drafts.pageinsight || defaultPaneState.pageinsight;
+    if ((currentDraft.opts?.mode || "summary") !== "chat") return;
+    setDrafts((prev) => ({
+      ...prev,
+      pageinsight: {
+        ...prev.pageinsight,
+        input: "",
+      },
+    }));
+  }, [drafts]);
+
   useEffect(() => { activeRef.current = active; }, [active]);
   useEffect(() => { showSettingsRef.current = showSettings; }, [showSettings]);
+  useEffect(() => { pageChatMessagesRef.current = pageChatMessages; }, [pageChatMessages]);
+
+  const stopChatStreamingMessages = useCallback(() => {
+    setPageChatMessages((prev) => prev.map((message) => (
+      message.streaming ? { ...message, streaming: false } : message
+    )));
+  }, []);
+
+  const getPageContext = useCallback(() => {
+    const pageUrl = window.location.href;
+    const pageTitle = document.title || "Untitled page";
+    const cacheKey = `${pageUrl}::${pageTitle}`;
+    if (pageContextCacheRef.current?.key === cacheKey) return pageContextCacheRef.current.value;
+
+    const pageDocument = scrapePageDocument();
+    const context = {
+      pageTitle,
+      pageUrl,
+      pageText: pageDocument.text,
+      pageDocument,
+    };
+    pageContextCacheRef.current = { key: cacheKey, value: context };
+    return context;
+  }, []);
 
   const getClampedSidePaneWidth = useCallback((nextWidth) => {
     const workspace = workspaceRef.current;
@@ -1264,27 +1459,30 @@ function App() {
   const cancelRun = useCallback(() => {
     cancelStream();
     cancelReveal();
+    stopChatStreamingMessages();
     runTokenRef.current += 1;
     setIsRunning(false);
     setStatusMsg("Cancelled.");
     setFallbackNotice(null);
     setTimeout(() => setStatusMsg(""), 1500);
-  }, [cancelReveal, cancelStream]);
+  }, [cancelReveal, cancelStream, stopChatStreamingMessages]);
 
   const minimizeToBubble = useCallback(() => {
     cancelStream();
     cancelReveal();
+    stopChatStreamingMessages();
     runTokenRef.current += 1;
     setIsRunning(false);
     setStatusMsg("");
     setFallbackNotice(null);
     setShowSettings(false);
     setOpen(false);
-  }, [cancelReveal, cancelStream]);
+  }, [cancelReveal, cancelStream, stopChatStreamingMessages]);
 
   const closeExtension = useCallback(() => {
     cancelStream();
     cancelReveal();
+    stopChatStreamingMessages();
     runTokenRef.current += 1;
     setIsRunning(false);
     setStatusMsg("");
@@ -1292,7 +1490,7 @@ function App() {
     setShowSettings(false);
     setOpen(false);
     setEnabled(false);
-  }, [cancelReveal, cancelStream, setEnabled]);
+  }, [cancelReveal, cancelStream, setEnabled, stopChatStreamingMessages]);
 
   useEffect(() => () => {
     cancelReveal();
@@ -1346,19 +1544,40 @@ function App() {
     lastRunRef.current = { op, text, opts };
     cancelStream();
     cancelReveal();
+    stopChatStreamingMessages();
     setFallbackNotice(null);
     if (op !== "pageinsight" && !text?.trim()) { setStatusMsg("Please enter some text."); setTimeout(() => setStatusMsg(""), 2000); return; }
+    if (op === "pageinsight" && (opts.mode || "summary") === "chat" && !text?.trim()) {
+      setStatusMsg("Ask something about the current page.");
+      setTimeout(() => setStatusMsg(""), 2000);
+      return;
+    }
     const token = ++runTokenRef.current;
-    const labels = { summarize: "Summarizing", translate: "Translating", extract: "Extracting", proofread: "Proofreading", rewrite: "Rewriting", write: "Writing", pageinsight: "Analyzing page" };
+    const isPageChatRun = op === "pageinsight" && (opts.mode || "summary") === "chat";
+    const labels = {
+      summarize: "Summarizing",
+      translate: "Translating",
+      extract: "Extracting",
+      proofread: "Proofreading",
+      rewrite: "Rewriting",
+      write: "Writing",
+      pageinsight: isPageChatRun ? "Thinking about page" : "Analyzing page",
+    };
     setIsRunning(true);
+    if (isPageChatRun) clearPageInsightInputIfChat(op);
     setStatusMsg(`${labels[op] || "Processing"}...`, true);
-    setResults([]);
+    if (!isPageChatRun) setResults([]);
     try {
       let result = "";
       let meta = null;
       const supportsTrueStreaming =
         aiMode !== "best_effort" &&
         ["summarize", "translate", "rewrite", "write", "pageinsight"].includes(op);
+      const pageContext = op === "pageinsight" ? getPageContext() : null;
+
+      if (op === "pageinsight" && (!pageContext?.pageText || pageContext.pageText.length < 50)) {
+        throw new Error("Could not extract readable content from this page.");
+      }
 
       if (supportsTrueStreaming) {
         const abortController = new AbortController();
@@ -1369,7 +1588,13 @@ function App() {
         let didReceiveFirstChunk = false;
         const applyStreamState = (nextText, nextMeta, streaming) => {
           if (token !== runTokenRef.current || activeRef.current !== op || showSettingsRef.current) return;
-          setResults([{ id: resultId, text: nextText, meta: nextMeta, streaming }]);
+          if (isPageChatRun) {
+            setPageChatMessages((prev) => prev.map((message) => (
+              message.id === resultId ? { ...message, text: nextText, meta: nextMeta, streaming } : message
+            )));
+          } else {
+            setResults([{ id: resultId, text: nextText, meta: nextMeta, streaming }]);
+          }
         };
         const handleStreamChunk = (chunk, nextMeta) => {
           streamedText += chunk;
@@ -1446,25 +1671,52 @@ function App() {
           meta = res?.meta || streamedMeta;
         }
         else if (op === "pageinsight") {
-          const pageText = scrapePageContent();
-          if (!pageText || pageText.length < 50) throw new Error("Could not extract readable content from this page.");
-          const summaryOpts = opts.summaryMode === "length" ? { length: opts.length } : { words: opts.words };
-          const res = await summarizeStream(pageText, {
-            ...summaryOpts,
-            format: opts.format || "paragraph",
-            listType: opts.listType || "unordered",
-            listStyle: opts.listStyle || "dash",
-            tone: opts.tone || "neutral",
-          }, {
-            signal: abortController.signal,
-            onStart(nextMeta) {
-              streamedMeta = nextMeta || streamedMeta;
-              applyStreamState(streamedText, streamedMeta, true);
-            },
-            onChunk(chunk, nextMeta) {
-              handleStreamChunk(chunk, nextMeta);
-            },
-          });
+          let res;
+          if (isPageChatRun) {
+            const userMessage = { id: resultId - 1, role: "user", text: text.trim() };
+            const assistantMessage = { id: resultId, role: "assistant", text: "", meta: null, streaming: true };
+            setPageChatMessages((prev) => [...prev, userMessage, assistantMessage]);
+            const history = pageChatMessagesRef.current.map((message) => ({
+              role: message.role,
+              text: message.text,
+            }));
+            res = await pageChatStream(text, {
+              pageTitle: pageContext.pageTitle,
+              pageUrl: pageContext.pageUrl,
+              pageText: pageContext.pageText,
+              pageDocument: pageContext.pageDocument,
+              history,
+              length: opts.chatLength || "medium",
+              tone: opts.tone || "neutral",
+            }, {
+              signal: abortController.signal,
+              onStart(nextMeta) {
+                streamedMeta = nextMeta || streamedMeta;
+                applyStreamState(streamedText, streamedMeta, true);
+              },
+              onChunk(chunk, nextMeta) {
+                handleStreamChunk(chunk, nextMeta);
+              },
+            });
+          } else {
+            const summaryOpts = opts.summaryMode === "length" ? { length: opts.length } : { words: opts.words };
+            res = await summarizeStream(pageContext.pageText, {
+              ...summaryOpts,
+              format: opts.format || "paragraph",
+              listType: opts.listType || "unordered",
+              listStyle: opts.listStyle || "dash",
+              tone: opts.tone || "neutral",
+            }, {
+              signal: abortController.signal,
+              onStart(nextMeta) {
+                streamedMeta = nextMeta || streamedMeta;
+                applyStreamState(streamedText, streamedMeta, true);
+              },
+              onChunk(chunk, nextMeta) {
+                handleStreamChunk(chunk, nextMeta);
+              },
+            });
+          }
           result = res?.text || streamedText;
           meta = res?.meta || streamedMeta;
         }
@@ -1519,22 +1771,48 @@ function App() {
         meta = res?.meta || null;
       }
       else if (op === "pageinsight") {
-        const pageText = scrapePageContent();
-        if (!pageText || pageText.length < 50) throw new Error("Could not extract readable content from this page.");
-        const summaryOpts = opts.summaryMode === "length" ? { length: opts.length } : { words: opts.words };
-        const res = await summarize(pageText, {
-          ...summaryOpts,
-          format: opts.format || "paragraph",
-          listType: opts.listType || "unordered",
-          listStyle: opts.listStyle || "dash",
-          tone: opts.tone || "neutral",
-        });
+        let res;
+        if (isPageChatRun) {
+          const assistantId = Date.now();
+          const userMessage = { id: assistantId - 1, role: "user", text: text.trim() };
+          const assistantMessage = { id: assistantId, role: "assistant", text: "", meta: null, streaming: true };
+          setPageChatMessages((prev) => [...prev, userMessage, assistantMessage]);
+          const history = pageChatMessagesRef.current.map((message) => ({
+            role: message.role,
+            text: message.text,
+          }));
+          res = await pageChat(text, {
+            pageTitle: pageContext.pageTitle,
+            pageUrl: pageContext.pageUrl,
+            pageText: pageContext.pageText,
+            pageDocument: pageContext.pageDocument,
+            history,
+            length: opts.chatLength || "medium",
+            tone: opts.tone || "neutral",
+          });
+          setPageChatMessages((prev) => prev.map((message) => (
+            message.id === assistantId ? { ...message, text: res?.text || "", meta: res?.meta || null, streaming: false } : message
+          )));
+        } else {
+          const summaryOpts = opts.summaryMode === "length" ? { length: opts.length } : { words: opts.words };
+          res = await summarize(pageContext.pageText, {
+            ...summaryOpts,
+            format: opts.format || "paragraph",
+            listType: opts.listType || "unordered",
+            listStyle: opts.listStyle || "dash",
+            tone: opts.tone || "neutral",
+          });
+        }
         result = res?.text || "";
         meta = res?.meta || null;
       }
 
       if (token !== runTokenRef.current || activeRef.current !== op || showSettingsRef.current) return;
-      if (supportsTrueStreaming) {
+      if (isPageChatRun) {
+        setPageChatMessages((prev) => prev.map((message) => (
+          message.streaming ? { ...message, text: result, meta, streaming: false } : message
+        )));
+      } else if (supportsTrueStreaming) {
         setResults([{ id: Date.now(), text: result, meta, streaming: false }]);
       } else {
         await revealResultText(token, op, result, meta);
@@ -1552,6 +1830,12 @@ function App() {
       setTimeout(() => setStatusMsg(""), 3000);
     } catch (err) {
       streamAbortRef.current = null;
+      stopChatStreamingMessages();
+      if (isPageChatRun) {
+        setPageChatMessages((prev) => prev.filter((message, index, arr) => (
+          !(message.role === "assistant" && !message.text.trim() && index === arr.length - 1)
+        )));
+      }
       if (token !== runTokenRef.current || activeRef.current !== op || showSettingsRef.current) {
         setIsRunning(false);
         return;
@@ -1617,6 +1901,13 @@ function App() {
   const stopKeyPropagation = (e) => {
     e.stopPropagation();
   };
+  const outputContent = isPageChatMode
+    ? (hasChatMessages
+      ? <PageChatThread messages={pageChatMessages} />
+      : <div className="fai-results-empty">Ask anything about the current page.</div>)
+    : (hasResults
+      ? results.map((r) => <ResultCard key={r.id} text={r.text} meta={r.meta} streaming={r.streaming} />)
+      : <div className="fai-results-empty">Output will appear here.</div>);
 
   return !enabledReady || !enabled ? null : (
     <AnimatePresence mode="wait">
@@ -1740,7 +2031,7 @@ function App() {
                       {showInputPane && (
                         <motion.div
                           className="fai-pane-shell"
-                          style={results.length > 0 ? { height: paneHeight, flex: "0 0 auto" } : undefined}
+                          style={hasVisibleOutput ? { height: paneHeight, flex: "0 0 auto" } : undefined}
                           initial={{ opacity: 0, y: 10 }}
                           animate={{ opacity: 1, y: 0 }}
                           exit={{ opacity: 0, y: -10 }}
@@ -1857,7 +2148,7 @@ function App() {
                                 type="button"
                                 className="fai-panel-btn"
                                 onClick={clearOutput}
-                                disabled={!hasResults}
+                                disabled={!hasVisibleOutput}
                                 title="Clear output">
                                 Clear
                               </button>
@@ -1871,10 +2162,7 @@ function App() {
                             </div>
                           </div>
                           <div className="fai-results fai-results--side">
-                            {hasResults
-                              ? results.map(r => <ResultCard key={r.id} text={r.text} meta={r.meta} streaming={r.streaming} />)
-                              : <div className="fai-results-empty">Output will appear here.</div>
-                            }
+                            {outputContent}
                           </div>
                         </div>
                     )
@@ -1890,17 +2178,14 @@ function App() {
                                 type="button"
                                 className="fai-panel-btn"
                                 onClick={clearOutput}
-                                disabled={!hasResults}
+                                disabled={!hasVisibleOutput}
                                 title="Clear output">
                                 Clear
                               </button>
                             </div>
                           </div>
                           <div className="fai-results">
-                            {hasResults
-                              ? results.map(r => <ResultCard key={r.id} text={r.text} meta={r.meta} streaming={r.streaming} />)
-                              : <div className="fai-results-empty">Output will appear here.</div>
-                            }
+                            {outputContent}
                           </div>
                         </motion.div>
                     </AnimatePresence>
@@ -2205,6 +2490,7 @@ function Pane({ active, draft, onDraftChange, onRun, onCancel, busy = false, por
   const [translateMenuOpen, setTranslateMenuOpen] = useState(false);
   const input = draft?.input ?? "";
   const opts = draft?.opts ?? defaultPaneState[active]?.opts ?? {};
+  const isPageChatMode = active === "pageinsight" && (opts.mode || "summary") === "chat";
   const translatePickerRef = useRef(null);
 
   const setOpts = (next) => onDraftChange({ opts: next });
@@ -2251,6 +2537,13 @@ function Pane({ active, draft, onDraftChange, onRun, onCancel, busy = false, por
 
   const run = async () => {
     await onRun(input, opts);
+  };
+  const handlePageChatKeyDown = async (event) => {
+    if (!isPageChatMode || busy) return;
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      await run();
+    }
   };
 
   const OptsUI = {
@@ -2436,76 +2729,157 @@ function Pane({ active, draft, onDraftChange, onRun, onCancel, busy = false, por
     pageinsight: (
       <div className="fai-opts-stack">
         <div className="fai-opts-section">
-          <div className="fai-opts-section-title">Summary Target</div>
+          <div className="fai-opts-section-title">Mode</div>
           <div className="fai-opts-row">
-            <div className="fai-segment" role="group" aria-label="Summary mode">
+            <div className="fai-segment" role="group" aria-label="Page Insight mode">
               <button
                 type="button"
-                className={`fai-segment-btn${opts.summaryMode === "words" ? " active" : ""}`}
-                aria-pressed={opts.summaryMode === "words"}
-                onClick={() => setOpts({ ...opts, summaryMode: "words" })}>
-                By words
+                className={`fai-segment-btn${(opts.mode || "summary") === "summary" ? " active" : ""}`}
+                aria-pressed={(opts.mode || "summary") === "summary"}
+                onClick={() => setOpts({ ...opts, mode: "summary" })}>
+                Summary
               </button>
               <button
                 type="button"
-                className={`fai-segment-btn${opts.summaryMode === "length" ? " active" : ""}`}
-                aria-pressed={opts.summaryMode === "length"}
-                onClick={() => setOpts({ ...opts, summaryMode: "length" })}>
-                By length
+                className={`fai-segment-btn${(opts.mode || "summary") === "chat" ? " active" : ""}`}
+                aria-pressed={(opts.mode || "summary") === "chat"}
+                onClick={() => setOpts({ ...opts, mode: "chat" })}>
+                Ask
               </button>
             </div>
-            {opts.summaryMode === "words" ? (
-              <label className="fai-opt-label">
-                Target words
-                <input type="number" className="fai-opt-input fai-opt-input--num"
-                  min="30" max="800" value={opts.words}
-                  onChange={e => setOpts({ ...opts, words: Number(e.target.value) || 30 })} />
-              </label>
-            ) : (
-              <label className="fai-opt-label">
-                Length
-                <select className="fai-select fai-opt-select" value={opts.length}
-                  onChange={e => setOpts({ ...opts, length: e.target.value })}>
-                  {SUMMARY_LENGTH_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-                </select>
-              </label>
-            )}
           </div>
         </div>
 
-        <div className="fai-opts-section">
-          <div className="fai-opts-section-title">Presentation</div>
-          <div className="fai-opts-row">
-            <label className="fai-opt-label">
-              Format
-              <CascadingFormatMenu opts={opts} onChange={setOpts} portalRoot={portalRoot} />
-            </label>
-            <label className="fai-opt-label">
-              Tone
-              <select className="fai-select fai-opt-select" value={opts.tone || "neutral"}
-                onChange={e => setOpts({ ...opts, tone: e.target.value })}>
-                {TONE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-              </select>
-            </label>
-          </div>
-        </div>
+        {(opts.mode || "summary") === "summary" ? (
+          <>
+            <div className="fai-opts-section">
+              <div className="fai-opts-section-title">Summary Target</div>
+              <div className="fai-opts-row">
+                <div className="fai-segment" role="group" aria-label="Summary mode">
+                  <button
+                    type="button"
+                    className={`fai-segment-btn${opts.summaryMode === "words" ? " active" : ""}`}
+                    aria-pressed={opts.summaryMode === "words"}
+                    onClick={() => setOpts({ ...opts, summaryMode: "words" })}>
+                    By words
+                  </button>
+                  <button
+                    type="button"
+                    className={`fai-segment-btn${opts.summaryMode === "length" ? " active" : ""}`}
+                    aria-pressed={opts.summaryMode === "length"}
+                    onClick={() => setOpts({ ...opts, summaryMode: "length" })}>
+                    By length
+                  </button>
+                </div>
+                {opts.summaryMode === "words" ? (
+                  <label className="fai-opt-label">
+                    Target words
+                    <input type="number" className="fai-opt-input fai-opt-input--num"
+                      min="30" max="800" value={opts.words}
+                      onChange={e => setOpts({ ...opts, words: Number(e.target.value) || 30 })} />
+                  </label>
+                ) : (
+                  <label className="fai-opt-label">
+                    Length
+                    <select className="fai-select fai-opt-select" value={opts.length}
+                      onChange={e => setOpts({ ...opts, length: e.target.value })}>
+                      {SUMMARY_LENGTH_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </label>
+                )}
+              </div>
+            </div>
+
+            <div className="fai-opts-section">
+              <div className="fai-opts-section-title">Presentation</div>
+              <div className="fai-opts-row">
+                <label className="fai-opt-label">
+                  Format
+                  <CascadingFormatMenu opts={opts} onChange={setOpts} portalRoot={portalRoot} />
+                </label>
+                <label className="fai-opt-label">
+                  Tone
+                  <select className="fai-select fai-opt-select" value={opts.tone || "neutral"}
+                    onChange={e => setOpts({ ...opts, tone: e.target.value })}>
+                    {TONE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  </select>
+                </label>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="fai-opts-section">
+              <div className="fai-opts-section-title">Answer Style</div>
+              <div className="fai-opts-row">
+                <label className="fai-opt-label">
+                  Length
+                  <select className="fai-select fai-opt-select" value={opts.chatLength || "medium"}
+                    onChange={e => setOpts({ ...opts, chatLength: e.target.value })}>
+                    {SUMMARY_LENGTH_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  </select>
+                </label>
+                <label className="fai-opt-label">
+                  Tone
+                  <select className="fai-select fai-opt-select" value={opts.tone || "neutral"}
+                    onChange={e => setOpts({ ...opts, tone: e.target.value })}>
+                    {TONE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            <div className="fai-opts-section">
+              <div className="fai-opts-section-title">Grounding</div>
+              <div className="fai-opts-hint">
+                Answers use the current page title, URL, visible text, and recent page-chat turns only.
+              </div>
+            </div>
+          </>
+        )}
       </div>
     ),
   }[active];
 
   return (
-    <div className="fai-pane fai-pane--input">
+    <div className={`fai-pane fai-pane--input${active === "pageinsight" ? " fai-pane--pageinsight" : ""}${isPageChatMode ? " fai-pane--pagechat" : ""}`}>
       <div className="fai-opts-bar">{OptsUI}</div>
       {active === "pageinsight" ? (
-        <div className="fai-page-info-card">
-          <div className="fai-page-info-icon">{"\u2295"}</div>
-          <div className="fai-page-info-body">
-            <div className="fai-page-info-title">{document.title || "Untitled page"}</div>
-            <div className="fai-page-info-domain">
-              {(() => { try { return new URL(window.location.href).hostname; } catch { return window.location.hostname || ""; } })()}
+        <div className="fai-page-insight-stack">
+          <div className="fai-page-info-card">
+            <div className="fai-page-info-icon">{"\u2295"}</div>
+            <div className="fai-page-info-body">
+              <div className="fai-page-info-title">{document.title || "Untitled page"}</div>
+              <div className="fai-page-info-domain">
+                {(() => { try { return new URL(window.location.href).hostname; } catch { return window.location.hostname || ""; } })()}
+              </div>
             </div>
+            <div className="fai-page-info-badge">{isPageChatMode ? "Grounded Chat" : "Live"}</div>
           </div>
-          <div className="fai-page-info-badge">Live</div>
+          {isPageChatMode && (
+            <>
+              <textarea
+                className="fai-input fai-input--chat"
+                value={input}
+                onChange={(e) => onDraftChange({ input: e.target.value })}
+                onKeyDown={handlePageChatKeyDown}
+                placeholder="Ask anything about the current page..."
+                disabled={busy}
+              />
+              <div className="fai-chat-hint">Grounded to the current page only. Press Enter to send, Shift+Enter for a new line.</div>
+              <div className="fai-chat-prompt-grid">
+                {PAGE_CHAT_SUGGESTIONS.map((prompt) => (
+                  <button
+                    key={prompt}
+                    type="button"
+                    className="fai-chat-prompt"
+                    onClick={() => onDraftChange({ input: prompt })}>
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       ) : (
         <textarea
@@ -2522,12 +2896,12 @@ function Pane({ active, draft, onDraftChange, onRun, onCancel, busy = false, por
           className={`fai-run-btn${busy ? " fai-run-btn--busy" : ""}`}
           onClick={busy ? undefined : run}
           disabled={busy}
-          aria-label={busy ? "Processing" : (active === "pageinsight" ? "Analyze page" : `Run ${active}`)}
+          aria-label={busy ? "Processing" : (active === "pageinsight" ? (isPageChatMode ? "Ask page" : "Analyze page") : `Run ${active}`)}
           whileTap={busy ? {} : { scale: 0.97 }}
           whileHover={busy ? {} : { scale: 1.01 }}>
           {busy
-            ? <><span className="fai-spinner" />{active === "pageinsight" ? "Analyzing page..." : "Working..."}</>
-            : <>{active === "pageinsight" ? "Analyze Page" : "Run"} {"\u203A"}</>}
+            ? <><span className="fai-spinner" />{active === "pageinsight" ? (isPageChatMode ? "Asking page..." : "Analyzing page...") : "Working..."}</>
+            : <>{active === "pageinsight" ? (isPageChatMode ? "Ask Page" : "Analyze Page") : "Run"} {"\u203A"}</>}
         </motion.button>
         {busy && (
           <button
