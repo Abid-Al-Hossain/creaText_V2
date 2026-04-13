@@ -30,6 +30,10 @@ export function translate(text, options = {}) {
   return sendAiMessage({ type: "__ai_run__", op: "translate", text, options });
 }
 
+export function extract(text, options = {}) {
+  return sendAiMessage({ type: "__ai_run__", op: "extract", text, options });
+}
+
 export function proofread(text) {
   return sendAiMessage({ type: "__ai_run__", op: "proofread", text });
 }

@@ -1,6 +1,7 @@
 // src/content.jsx
 import stylesText from "./style.css?inline";
 import React, { useEffect, useRef, useState, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -11,7 +12,7 @@ import {
   getGroqModelLabel,
 } from "./providerCatalog";
 import {
-  summarize, translate, rewrite, proofread, write,
+  summarize, translate, extract, rewrite, proofread, write,
   getAiSettings, saveAiSettings,
 } from "./aiBuiltins";
 
@@ -21,14 +22,15 @@ const defaultTheme = {
   bg: "", border: "", accent: "", text: "", bubble: 46,
   bgRaw: "", borderRaw: "", accentRaw: "", textRaw: ""
 };
-const defaultFeatures = { summarize: true, translate: true, proofread: true, rewrite: true, write: true, pageinsight: true };
+const defaultFeatures = { summarize: true, translate: true, extract: true, proofread: true, rewrite: true, write: true, pageinsight: true };
 const defaultPaneState = {
   summarize: { input: "", opts: { summaryMode: "words", words: 120, length: "medium" } },
   translate: { input: "", opts: { lang: "en" } },
+  extract: { input: "", opts: { preset: "keyfacts", format: "table", listType: "unordered", listStyle: "dash", fields: "" } },
   proofread: { input: "", opts: {} },
-  rewrite: { input: "", opts: { format: "paragraph", tone: "neutral" } },
+  rewrite: { input: "", opts: { format: "paragraph", listType: "unordered", listStyle: "dash", tone: "neutral" } },
   write: { input: "", opts: { tone: "neutral" } },
-  pageinsight: { input: "", opts: { summaryMode: "length", length: "medium", words: 200, format: "paragraph", tone: "neutral" } },
+  pageinsight: { input: "", opts: { summaryMode: "length", length: "medium", words: 200, format: "paragraph", listType: "unordered", listStyle: "dash", tone: "neutral" } },
 };
 const MIN_DRAWER_WIDTH = 560;
 const MIN_DRAWER_HEIGHT = 400;
@@ -51,6 +53,7 @@ const THEME_PRESETS = {
 const FEATURES_META = {
   summarize: { icon: "\u25C8", label: "Summarize", desc: "Condense text to key points" },
   translate: { icon: "\u21C4", label: "Translate", desc: "Convert to any language" },
+  extract: { icon: "\u25A3", label: "Extract", desc: "Pull structured data from text" },
   proofread: { icon: "\u25CE", label: "Proofread", desc: "Fix grammar & spelling" },
   rewrite: { icon: "\u21BA", label: "Rewrite", desc: "Restructure & rephrase" },
   write: { icon: "\u270E", label: "Write", desc: "Generate from a prompt" },
@@ -92,6 +95,39 @@ const AI_MODE_META = {
 const SPRING_SNAPPY = { type: "spring", stiffness: 320, damping: 24 };
 const SPRING_SOFT   = { type: "spring", stiffness: 220, damping: 22 };
 const SPRING_PANEL  = { type: "spring", stiffness: 260, damping: 28 };
+const TONE_OPTIONS = [
+  { value: "neutral", label: "Neutral" },
+  { value: "formal", label: "Formal" },
+  { value: "casual", label: "Casual" },
+];
+const SUMMARY_LENGTH_OPTIONS = [
+  { value: "short", label: "Short" },
+  { value: "medium", label: "Medium" },
+  { value: "long", label: "Long" },
+];
+const EXTRACT_PRESET_OPTIONS = [
+  { value: "keyfacts", label: "Key Facts" },
+  { value: "entities", label: "Entities" },
+  { value: "contacts", label: "Contacts" },
+  { value: "actionitems", label: "Action Items" },
+  { value: "timeline", label: "Timeline" },
+  { value: "faq", label: "FAQ" },
+  { value: "custom", label: "Custom Fields" },
+];
+const THEME_OPTIONS = [
+  { value: "default", label: "Default" },
+  { value: "ocean", label: "Ocean" },
+  { value: "forest", label: "Forest" },
+  { value: "midnight", label: "Midnight" },
+  { value: "sunrise", label: "Sunrise" },
+  { value: "lavender", label: "Lavender" },
+  { value: "custom", label: "Custom" },
+];
+const TEXT_COLOR_OPTIONS = [
+  { value: "black", label: "Black" },
+  { value: "white", label: "White" },
+  { value: "ash", label: "Ash" },
+];
 const COMMON_TRANSLATION_LANGUAGES = [
   { value: "ar", label: "Arabic" },
   { value: "bn", label: "Bengali" },
@@ -292,30 +328,53 @@ function normalizeMarkdownCell(cell) {
 function parseMarkdownBlocks(text) {
   const lines = String(text || "")
     .trim()
-    .split(/\r?\n/)
-    .map((line) => line.trim());
+    .split(/\r?\n/);
 
   const blocks = [];
   let currentText = [];
   let i = 0;
 
+  const getTrimmed = (line) => String(line || "").trim();
+  const isListLine = (line) => /^(\s*)(?:[-*]|\d+[.)]|[A-Za-z][.)]|[ivxlcdmIVXLCDM]+[.)])\s+/.test(String(line || ""));
+
   while (i < lines.length) {
-    if (lines[i].includes("|") && i + 1 < lines.length && isMarkdownTableSeparator(lines[i + 1])) {
+    const currentLine = lines[i];
+    const trimmedLine = getTrimmed(currentLine);
+
+    if (trimmedLine.includes("|") && i + 1 < lines.length && isMarkdownTableSeparator(getTrimmed(lines[i + 1]))) {
       if (currentText.length > 0) {
         blocks.push({ type: "text", content: currentText.join("\n").trim() });
         currentText = [];
       }
-      const headers = splitMarkdownRow(lines[i]).map(normalizeMarkdownCell);
+      const headers = splitMarkdownRow(trimmedLine).map(normalizeMarkdownCell);
       i += 2; // Skip header and separator
       const rows = [];
-      while (i < lines.length && lines[i].includes("|")) {
-        const cells = splitMarkdownRow(lines[i]).map(normalizeMarkdownCell);
+      while (i < lines.length && getTrimmed(lines[i]).includes("|")) {
+        const cells = splitMarkdownRow(getTrimmed(lines[i])).map(normalizeMarkdownCell);
         rows.push(headers.map((_, idx) => cells[idx] || ""));
         i++;
       }
       blocks.push({ type: "table", headers, rows });
+    } else if (isListLine(currentLine)) {
+      if (currentText.length > 0) {
+        blocks.push({ type: "text", content: currentText.join("\n").trim() });
+        currentText = [];
+      }
+      const listLines = [];
+      while (i < lines.length) {
+        const candidate = lines[i];
+        if (!getTrimmed(candidate)) {
+          listLines.push(candidate);
+          i++;
+          continue;
+        }
+        if (!isListLine(candidate)) break;
+        listLines.push(candidate);
+        i++;
+      }
+      blocks.push({ type: "list", items: parseNestedList(listLines) });
     } else {
-      currentText.push(lines[i]);
+      currentText.push(trimmedLine);
       i++;
     }
   }
@@ -325,6 +384,372 @@ function parseMarkdownBlocks(text) {
   }
 
   return blocks;
+}
+
+function parseNestedList(lines) {
+  const root = [];
+  const stack = [{ indent: -1, items: root }];
+
+  for (const rawLine of lines) {
+    const line = String(rawLine || "");
+    if (!line.trim()) continue;
+
+    const match = line.match(/^(\s*)([-*]|\d+[.)]|[A-Za-z][.)]|[ivxlcdmIVXLCDM]+[.)])\s+(.*)$/);
+    if (!match) continue;
+
+    const indent = match[1].replace(/\t/g, "    ").length;
+    const marker = match[2];
+    const content = match[3].trim();
+    const ordered = !/^[-*]$/.test(marker);
+    const node = { content, ordered, children: [] };
+
+    while (stack.length > 1 && indent <= stack[stack.length - 1].indent) {
+      stack.pop();
+    }
+
+    const currentLevel = stack[stack.length - 1];
+    const siblings = currentLevel.items;
+    const previous = siblings[siblings.length - 1];
+
+    if (indent > currentLevel.indent && previous) {
+      previous.children.push(node);
+      stack.push({ indent, items: previous.children });
+      continue;
+    }
+
+    siblings.push(node);
+    stack.push({ indent, items: siblings });
+    stack.pop();
+  }
+
+  return root;
+}
+
+const FORMAT_MENU_ITEMS = [
+  { value: "paragraph", label: "Paragraph" },
+  {
+    value: "list",
+    label: "List",
+    children: [
+      {
+        value: "unordered",
+        label: "Unordered",
+        children: [
+          { value: "dash", label: "Dash (-)" },
+        ],
+      },
+      {
+        value: "ordered",
+        label: "Ordered",
+        children: [
+          { value: "number", label: "Number" },
+          { value: "lower-alpha", label: "Alphabet (a)" },
+          { value: "upper-alpha", label: "Alphabet (A)" },
+          { value: "lower-roman", label: "Roman (i)" },
+          { value: "upper-roman", label: "Roman (I)" },
+        ],
+      },
+    ],
+  },
+  { value: "table", label: "Table" },
+  { value: "json", label: "JSON" },
+  { value: "tldr", label: "TL;DR" },
+];
+
+function getListStyleDefaults(listType) {
+  return listType === "ordered" ? "number" : "dash";
+}
+
+function getFormatSummary(opts) {
+  const format = opts?.format === "points" ? "list" : (opts?.format || "paragraph");
+  if (format !== "list") {
+    return FORMAT_MENU_ITEMS.find((item) => item.value === format)?.label || "Paragraph";
+  }
+
+  const listType = opts?.listType || "unordered";
+  const listStyle = opts?.listStyle || getListStyleDefaults(listType);
+  const typeItem = FORMAT_MENU_ITEMS
+    .find((item) => item.value === "list")
+    ?.children?.find((child) => child.value === listType);
+  const styleItem = typeItem?.children?.find((child) => child.value === listStyle);
+  return styleItem ? `List: ${styleItem.label}` : "List";
+}
+
+function NestedFormatMenu({ opts, onChange, formats = FORMAT_MENU_ITEMS }) {
+  const [open, setOpen] = useState(false);
+  const [path, setPath] = useState([]);
+  const rootRef = useRef(null);
+
+  useEffect(() => {
+    const handlePointerDown = (event) => {
+      if (!rootRef.current?.contains(event.target)) {
+        setOpen(false);
+        setPath([]);
+      }
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, []);
+
+  const commitSelection = (format, listType, listStyle) => {
+    const next = { ...opts, format };
+    if (format === "list") {
+      next.listType = listType || opts?.listType || "unordered";
+      next.listStyle = listStyle || opts?.listStyle || getListStyleDefaults(next.listType);
+    }
+    onChange(next);
+    setOpen(false);
+    setPath([]);
+  };
+
+  const renderLevel = (items, level = 0) => (
+    <div className={`fai-cascade-menu fai-cascade-menu--level-${level}`}>
+      {items.map((item) => {
+        const isActivePath = path[level] === item.value;
+        const hasChildren = Array.isArray(item.children) && item.children.length > 0;
+        const isSelected =
+          item.value === (opts?.format === "points" ? "list" : (opts?.format || "paragraph")) ||
+          item.value === opts?.listType ||
+          item.value === opts?.listStyle;
+
+        return (
+          <div
+            key={`${level}-${item.value}`}
+            className="fai-cascade-item-wrap"
+            onMouseEnter={() => {
+              if (hasChildren) setPath((prev) => [...prev.slice(0, level), item.value]);
+              else setPath((prev) => prev.slice(0, level));
+            }}>
+            <button
+              type="button"
+              className={`fai-cascade-item${isSelected ? " active" : ""}`}
+              onClick={() => {
+                if (item.value === "paragraph" || item.value === "table" || item.value === "tldr") {
+                  commitSelection(item.value);
+                  return;
+                }
+                if (level === 2) {
+                  commitSelection("list", path[1], item.value);
+                }
+              }}>
+              <span>{item.label}</span>
+              {hasChildren && <span className="fai-cascade-arrow">›</span>}
+            </button>
+            {hasChildren && open && isActivePath && renderLevel(item.children, level + 1)}
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  return (
+    <div
+      className="fai-cascade"
+      ref={rootRef}
+      onMouseLeave={() => {
+        setPath([]);
+      }}>
+      <button
+        type="button"
+        className={`fai-cascade-trigger${open ? " active" : ""}`}
+        onClick={() => setOpen((prev) => !prev)}
+        onMouseEnter={() => setOpen(true)}>
+        <span>{getFormatSummary(opts)}</span>
+        <span className="fai-cascade-arrow">›</span>
+      </button>
+      {open && renderLevel(formats, 0)}
+    </div>
+  );
+}
+
+function CascadingFormatMenu({ opts, onChange, formats = FORMAT_MENU_ITEMS, portalRoot = null }) {
+  const [open, setOpen] = useState(false);
+  const [path, setPath] = useState([]);
+  const rootRef = useRef(null);
+  const layerRef = useRef(null);
+  const closeTimerRef = useRef(null);
+  const itemRefs = useRef(new Map());
+
+  const cancelClose = useCallback(() => {
+    if (closeTimerRef.current) {
+      clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+  }, []);
+
+  const closeMenu = useCallback(() => {
+    cancelClose();
+    setOpen(false);
+    setPath([]);
+  }, [cancelClose]);
+
+  const scheduleClose = useCallback(() => {
+    cancelClose();
+    closeTimerRef.current = setTimeout(() => {
+      setOpen(false);
+      setPath([]);
+    }, 120);
+  }, [cancelClose]);
+
+  useEffect(() => () => cancelClose(), [cancelClose]);
+
+  useEffect(() => {
+    const handlePointerDown = (event) => {
+      const insideTrigger = rootRef.current?.contains(event.target);
+      const insideLayer = layerRef.current?.contains(event.target);
+      if (!insideTrigger && !insideLayer) closeMenu();
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [closeMenu]);
+
+  const commitSelection = (format, listType, listStyle) => {
+    const next = { ...opts, format };
+    if (format === "list") {
+      next.listType = listType || opts?.listType || "unordered";
+      next.listStyle = listStyle || opts?.listStyle || getListStyleDefaults(next.listType);
+    }
+    onChange(next);
+    closeMenu();
+  };
+
+  const getPortalTarget = () => {
+    if (portalRoot) return portalRoot;
+    if (rootRef.current?.closest(".fai-drawer")) return rootRef.current.closest(".fai-drawer");
+    if (rootRef.current?.getRootNode) {
+      const node = rootRef.current.getRootNode();
+      if (node && node.nodeType) return node;
+    }
+    return null;
+  };
+
+  const getItemsAtLevel = (level) => {
+    let items = formats;
+    for (let index = 0; index < level; index += 1) {
+      const nextValue = path[index];
+      const nextItem = items.find((item) => item.value === nextValue);
+      if (!nextItem?.children) return [];
+      items = nextItem.children;
+    }
+    return items;
+  };
+
+  const getVisibleLevels = () => {
+    const levels = [0];
+    let items = formats;
+    let level = 0;
+    while (true) {
+      const activeValue = path[level];
+      const activeItem = items.find((item) => item.value === activeValue);
+      if (!activeItem?.children?.length) break;
+      levels.push(level + 1);
+      items = activeItem.children;
+      level += 1;
+    }
+    return levels;
+  };
+
+  const getMenuPosition = (level) => {
+    if (level === 0) {
+      const rect = rootRef.current?.getBoundingClientRect();
+      if (!rect) return null;
+      return { top: rect.bottom + 8, left: rect.left };
+    }
+    const anchorValue = path[level - 1];
+    const anchorRect = itemRefs.current.get(`${level - 1}:${anchorValue}`)?.getBoundingClientRect();
+    if (!anchorRect) return null;
+    return { top: anchorRect.top, left: anchorRect.right + 8 };
+  };
+
+  const renderMenuLevel = (level) => {
+    const items = getItemsAtLevel(level);
+    const position = getMenuPosition(level);
+    if (!items.length || !position) return null;
+
+    return (
+      <div
+        key={`menu-${level}`}
+        className={`fai-cascade-menu fai-cascade-menu--portal fai-cascade-menu--level-${level}`}
+        style={{ top: `${position.top}px`, left: `${position.left}px` }}
+        onMouseEnter={cancelClose}
+        onMouseLeave={scheduleClose}>
+        {items.map((item) => {
+          const hasChildren = Array.isArray(item.children) && item.children.length > 0;
+          const isSelected =
+            item.value === (opts?.format === "points" ? "list" : (opts?.format || "paragraph")) ||
+            item.value === opts?.listType ||
+            item.value === opts?.listStyle;
+
+          return (
+            <button
+              key={`${level}-${item.value}`}
+              ref={(node) => {
+                if (node) itemRefs.current.set(`${level}:${item.value}`, node);
+                else itemRefs.current.delete(`${level}:${item.value}`);
+              }}
+              type="button"
+              className={`fai-cascade-item${isSelected ? " active" : ""}`}
+              onMouseEnter={() => {
+                cancelClose();
+                if (hasChildren) setPath((prev) => [...prev.slice(0, level), item.value]);
+                else setPath((prev) => prev.slice(0, level));
+              }}
+              onPointerDown={(event) => {
+                event.preventDefault();
+                if (item.value === "paragraph" || item.value === "table" || item.value === "json" || item.value === "tldr") {
+                  commitSelection(item.value);
+                  return;
+                }
+                if (level === 1 && (item.value === "unordered" || item.value === "ordered")) {
+                  commitSelection("list", item.value, getListStyleDefaults(item.value));
+                  return;
+                }
+                if (level === 2) {
+                  commitSelection("list", path[1], item.value);
+                }
+              }}>
+              <span>{item.label}</span>
+              {hasChildren && <span className="fai-cascade-arrow fai-cascade-arrow--right" aria-hidden="true" />}
+            </button>
+          );
+        })}
+      </div>
+    );
+  };
+
+  const portalTarget = open ? getPortalTarget() : null;
+  const portalMenus = open && portalTarget
+    ? createPortal(
+        <div
+          ref={layerRef}
+          className="fai-cascade-layer"
+          onMouseEnter={cancelClose}
+          onMouseLeave={scheduleClose}>
+          {getVisibleLevels().map((level) => renderMenuLevel(level))}
+        </div>,
+        portalTarget
+      )
+    : null;
+
+  return (
+    <>
+      <div
+        className="fai-cascade"
+        ref={rootRef}
+        onMouseEnter={cancelClose}
+        onMouseLeave={scheduleClose}>
+        <button
+          type="button"
+          className={`fai-cascade-trigger${open ? " active" : ""}`}
+          onClick={() => setOpen((prev) => !prev)}
+          onMouseEnter={() => setOpen(true)}>
+          <span>{getFormatSummary(opts)}</span>
+          <span className="fai-cascade-arrow fai-cascade-arrow--down" aria-hidden="true" />
+        </button>
+      </div>
+      {portalMenus}
+    </>
+  );
 }
 
 /* ------------ Color Swatch ------------ */
@@ -425,6 +850,13 @@ function ResultCard({ text, meta }) {
             </div>
           );
         }
+        if (block.type === "list") {
+          return (
+            <div key={`block-${idx}`} className="fai-result-list-wrap" style={idx > 0 ? { marginTop: 12 } : {}}>
+              <RenderedList items={block.items} />
+            </div>
+          );
+        }
         return (
           <div key={`block-${idx}`} className="fai-result-text" style={idx > 0 ? { marginTop: 12 } : {}}>
             {block.content}
@@ -436,6 +868,23 @@ function ResultCard({ text, meta }) {
         {copied ? "Copied" : "Copy"}
       </button>
     </motion.div>
+  );
+}
+
+function RenderedList({ items, ordered = null }) {
+  if (!Array.isArray(items) || !items.length) return null;
+  const isOrdered = ordered ?? Boolean(items[0]?.ordered);
+  const Tag = isOrdered ? "ol" : "ul";
+
+  return (
+    <Tag className={`fai-result-list fai-result-list--${isOrdered ? "ordered" : "unordered"}`}>
+      {items.map((item, index) => (
+        <li key={`${item.content}-${index}`}>
+          <span>{item.content}</span>
+          {item.children?.length > 0 && <RenderedList items={item.children} ordered={item.children[0]?.ordered} />}
+        </li>
+      ))}
+    </Tag>
   );
 }
 
@@ -460,7 +909,6 @@ function App() {
   const [paneHeight, setPaneHeight]   = useState(320);
   const [sidePaneWidth, setSidePaneWidth] = useState(520);
   const [hiddenWidePane, setHiddenWidePane] = useState(null);
-  const [closingWidePane, setClosingWidePane] = useState(null);
 
   const setStatusMsg = (text, loading = false) => setStatus({ text, loading });
   const drawerRef = useRef(null);
@@ -475,8 +923,8 @@ function App() {
   const useSideBySideResults = (pos.width || defaultPos.width) >= 1040;
   const isInputPaneHidden = useSideBySideResults && hiddenWidePane === "input";
   const isOutputPaneHidden = useSideBySideResults && hiddenWidePane === "output";
-  const showInputPane = !useSideBySideResults || hiddenWidePane !== "input" || closingWidePane?.pane === "input";
-  const showOutputPane = !useSideBySideResults || hiddenWidePane !== "output" || closingWidePane?.pane === "output";
+  const showInputPane = !useSideBySideResults || hiddenWidePane !== "input";
+  const showOutputPane = !useSideBySideResults || hiddenWidePane !== "output";
   const clearOutput = () => {
     setResults([]);
     setStatusMsg("");
@@ -496,10 +944,6 @@ function App() {
     return clamp(nextWidth, MIN_SIDE_EDITOR_WIDTH, maxWidth);
   }, []);
   const wideInputWidth = getClampedSidePaneWidth(sidePaneWidth);
-  const wideOutputWidth = Math.max(
-    MIN_SIDE_RESULTS_WIDTH,
-    (pos.width || defaultPos.width) - wideInputWidth - SIDE_SPLITTER_SIZE - 32
-  );
 
   useEffect(() => {
     const handler = (msg) => {
@@ -758,14 +1202,9 @@ function App() {
 
   const hideWidePane = (pane) => {
     if (!workspaceRef.current || !useSideBySideResults) return;
-    setClosingWidePane({
-      pane,
-      inputWidth: wideInputWidth,
-      outputWidth: wideOutputWidth,
-    });
+    setHiddenWidePane(pane);
   };
   const restoreWidePanes = () => {
-    setClosingWidePane(null);
     setHiddenWidePane(null);
   };
 
@@ -796,7 +1235,7 @@ function App() {
     setFallbackNotice(null);
     if (op !== "pageinsight" && !text?.trim()) { setStatusMsg("Please enter some text."); setTimeout(() => setStatusMsg(""), 2000); return; }
     const token = ++runTokenRef.current;
-    const labels = { summarize: "Summarizing", translate: "Translating", proofread: "Proofreading", rewrite: "Rewriting", write: "Writing", pageinsight: "Analyzing page" };
+    const labels = { summarize: "Summarizing", translate: "Translating", extract: "Extracting", proofread: "Proofreading", rewrite: "Rewriting", write: "Writing", pageinsight: "Analyzing page" };
     setStatusMsg(`${labels[op] || "Processing"}...`, true);
     setResults([]);
     try {
@@ -815,6 +1254,17 @@ function App() {
         result = res?.text || "";
         meta = res?.meta || null;
       }
+      else if (op === "extract") {
+        const res = await extract(text, {
+          preset: opts.preset || "keyfacts",
+          format: opts.format || "table",
+          listType: opts.listType || "unordered",
+          listStyle: opts.listStyle || "disc",
+          fields: opts.fields || "",
+        });
+        result = res?.text || "";
+        meta = res?.meta || null;
+      }
       else if (op === "proofread") {
         const res = await proofread(text);
         const corrected = res?.correctedText || String(res);
@@ -824,7 +1274,12 @@ function App() {
         meta = res?.meta || null;
       }
       else if (op === "rewrite") {
-        const res = await rewrite(text, { format: opts.format || "paragraph", tone: opts.tone || "neutral" });
+        const res = await rewrite(text, {
+          format: opts.format || "paragraph",
+          listType: opts.listType || "unordered",
+          listStyle: opts.listStyle || "disc",
+          tone: opts.tone || "neutral",
+        });
         result = res?.text || "";
         meta = res?.meta || null;
       }
@@ -837,7 +1292,13 @@ function App() {
         const pageText = scrapePageContent();
         if (!pageText || pageText.length < 50) throw new Error("Could not extract readable content from this page.");
         const summaryOpts = opts.summaryMode === "length" ? { length: opts.length } : { words: opts.words };
-        const res = await summarize(pageText, { ...summaryOpts, format: opts.format || "paragraph", tone: opts.tone || "neutral" });
+        const res = await summarize(pageText, {
+          ...summaryOpts,
+          format: opts.format || "paragraph",
+          listType: opts.listType || "unordered",
+          listStyle: opts.listStyle || "disc",
+          tone: opts.tone || "neutral",
+        });
         result = res?.text || "";
         meta = res?.meta || null;
       }
@@ -1021,41 +1482,38 @@ function App() {
                     <div className="fai-feature-desc">{activeMeta.desc}</div>
                   </div>
                 </div>
-                <motion.div
-                  layout
+                <div
                   className={`fai-workspace${useSideBySideResults ? " fai-workspace--split" : ""}`}
-                  ref={workspaceRef}
-                  transition={SPRING_SOFT}>
-                  <AnimatePresence initial={false}>
+                  ref={workspaceRef}>
+                  {!useSideBySideResults ? (
+                    <AnimatePresence initial={false}>
+                      {showInputPane && (
+                        <motion.div
+                          className="fai-pane-shell"
+                          style={results.length > 0 ? { height: paneHeight, flex: "0 0 auto" } : undefined}
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -10 }}
+                          transition={SPRING_PANEL}>
+                          <div className="fai-panel-shell">
+                            <Pane
+                              active={active}
+                              draft={drafts[active] || defaultPaneState[active]}
+                              onDraftChange={(next) => updateDraft(active, next)}
+                              onRun={(input, opts) => runOp(active, input, opts)}
+                              portalRoot={drawerRef.current}
+                            />
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  ) : (
+                    <>
                   {showInputPane && (
-                    <motion.div
-                      layout
+                    <div
                       className="fai-pane-shell"
-                      style={useSideBySideResults
-                        ? closingWidePane
-                          ? { flex: `0 0 ${closingWidePane.inputWidth}px`, width: closingWidePane.inputWidth }
-                          : hiddenWidePane
-                            ? undefined
-                            : { flex: `0 0 ${wideInputWidth}px`, width: wideInputWidth }
-                        : results.length > 0
-                          ? { height: paneHeight, flex: "0 0 auto" }
-                          : undefined}
-                      initial={useSideBySideResults ? { opacity: 0, x: -28 } : { opacity: 0, y: 10 }}
-                      animate={useSideBySideResults && closingWidePane?.pane === "input"
-                        ? { opacity: 0, x: -36, width: 0, minWidth: 0, flexBasis: 0 }
-                        : { opacity: 1, x: 0, y: 0 }}
-                      exit={useSideBySideResults
-                        ? { opacity: 0, x: -36, width: 0, minWidth: 0, flexBasis: 0 }
-                        : { opacity: 0, y: -10 }}
-                      onAnimationComplete={() => {
-                        if (closingWidePane?.pane === "input") {
-                          setHiddenWidePane("input");
-                          setClosingWidePane(null);
-                        }
-                      }}
-                      transition={SPRING_PANEL}>
-                      <div className={`fai-panel-shell${useSideBySideResults ? " fai-panel-shell--side" : ""}`}>
-                        {useSideBySideResults && (
+                      style={hiddenWidePane ? undefined : { flex: `0 0 ${wideInputWidth}px`, width: wideInputWidth }}>
+                      <div className="fai-panel-shell fai-panel-shell--side">
                           <div className="fai-panel-head">
                             <span className="fai-panel-title">Input</span>
                             <div className="fai-panel-actions">
@@ -1068,17 +1526,18 @@ function App() {
                               </button>
                             </div>
                           </div>
-                        )}
                         <Pane
                           active={active}
                           draft={drafts[active] || defaultPaneState[active]}
                           onDraftChange={(next) => updateDraft(active, next)}
                           onRun={(input, opts) => runOp(active, input, opts)}
+                          portalRoot={drawerRef.current}
                         />
                       </div>
-                    </motion.div>
+                    </div>
                   )}
-                  </AnimatePresence>
+                    </>
+                  )}
 
                   <AnimatePresence initial={false}>
                     {!useSideBySideResults && (
@@ -1097,32 +1556,18 @@ function App() {
                     )}
                   </AnimatePresence>
 
-                  <AnimatePresence initial={false}>
                   {useSideBySideResults && showInputPane && showOutputPane && (
-                    <motion.div
-                      layout
+                    <div
                       className="fai-pane-splitter fai-pane-splitter--vertical"
                       onPointerDown={onSideSplitStart}
                       title="Resize input and output panels"
-                      aria-hidden="true"
-                      initial={{ opacity: 0, scaleY: 0.85 }}
-                      animate={{ opacity: 1, scaleY: 1 }}
-                      exit={{ opacity: 0, scaleY: 0.85 }}
-                      transition={SPRING_PANEL}>
+                      aria-hidden="true">
                       <span className="fai-pane-splitter-grip fai-pane-splitter-grip--vertical" />
-                    </motion.div>
+                    </div>
                   )}
-                  </AnimatePresence>
 
-                  <AnimatePresence initial={false}>
-                  {useSideBySideResults && isInputPaneHidden && closingWidePane?.pane !== "input" && (
-                    <motion.div
-                      layout
-                      className="fai-pane-collapsed-rail fai-pane-collapsed-rail--left"
-                      initial={{ opacity: 0, x: -18 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: -18 }}
-                      transition={SPRING_PANEL}>
+                  {useSideBySideResults && isInputPaneHidden && (
+                    <div className="fai-pane-collapsed-rail fai-pane-collapsed-rail--left">
                       <button
                         type="button"
                         className="fai-pane-restore-btn"
@@ -1130,19 +1575,11 @@ function App() {
                         title="Show input panel">
                         Input
                       </button>
-                    </motion.div>
+                    </div>
                   )}
-                  </AnimatePresence>
 
-                  <AnimatePresence initial={false}>
-                  {useSideBySideResults && isOutputPaneHidden && closingWidePane?.pane !== "output" && (
-                    <motion.div
-                      layout
-                      className="fai-pane-collapsed-rail fai-pane-collapsed-rail--right"
-                      initial={{ opacity: 0, x: 18 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      exit={{ opacity: 0, x: 18 }}
-                      transition={SPRING_PANEL}>
+                  {useSideBySideResults && isOutputPaneHidden && (
+                    <div className="fai-pane-collapsed-rail fai-pane-collapsed-rail--right">
                       <button
                         type="button"
                         className="fai-pane-restore-btn"
@@ -1150,32 +1587,15 @@ function App() {
                         title="Show output panel">
                         Output
                       </button>
-                    </motion.div>
+                    </div>
                   )}
-                  </AnimatePresence>
 
-                  <AnimatePresence initial={false}>
-                    {showOutputPane && (
-                      useSideBySideResults ? (
-                        <motion.div
-                          layout
+                  {useSideBySideResults ? (
+                    showOutputPane && (
+                        <div
                           className="fai-results-shell"
                           aria-live="polite"
-                          style={useSideBySideResults && closingWidePane
-                            ? { flex: `0 0 ${closingWidePane.outputWidth}px`, width: closingWidePane.outputWidth }
-                            : undefined}
-                          initial={{ opacity: 0, x: 28 }}
-                          animate={useSideBySideResults && closingWidePane?.pane === "output"
-                            ? { opacity: 0, x: 36, width: 0, minWidth: 0, flexBasis: 0 }
-                            : { opacity: 1, x: 0 }}
-                          exit={{ opacity: 0, x: 36, width: 0, minWidth: 0, flexBasis: 0 }}
-                          onAnimationComplete={() => {
-                            if (closingWidePane?.pane === "output") {
-                              setHiddenWidePane("output");
-                              setClosingWidePane(null);
-                            }
-                          }}
-                          transition={SPRING_PANEL}>
+                          style={hiddenWidePane ? undefined : { flex: 1, minWidth: 0 }}>
                           <div className="fai-panel-head fai-panel-head--results">
                             <span className="fai-panel-title">Output</span>
                             <div className="fai-panel-actions">
@@ -1202,8 +1622,10 @@ function App() {
                               : <div className="fai-results-empty">Output will appear here.</div>
                             }
                           </div>
-                        </motion.div>
-                      ) : (
+                        </div>
+                    )
+                  ) : (
+                    <AnimatePresence initial={false}>
                         <motion.div layout className="fai-panel-shell" aria-live="polite"
                           initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
                           transition={SPRING_PANEL}>
@@ -1227,10 +1649,9 @@ function App() {
                             }
                           </div>
                         </motion.div>
-                      )
-                    )}
-                  </AnimatePresence>
-                </motion.div>
+                    </AnimatePresence>
+                  )}
+                </div>
               </>
             )}
 
@@ -1475,13 +1896,7 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
         <div className="fai-settings-row">
           <label className="fai-settings-label">Theme</label>
           <select value={preset} onChange={e => onPresetChange(e.target.value)} className="fai-select" aria-label="Choose theme">
-            <option value="default">Default</option>
-            <option value="ocean">Ocean</option>
-            <option value="forest">Forest</option>
-            <option value="midnight">Midnight</option>
-            <option value="sunrise">Sunrise</option>
-            <option value="lavender">Lavender</option>
-            <option value="custom">Custom</option>
+            {THEME_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
           <button type="button" onClick={() => onPresetChange("default")} className="fai-reset-btn" title="Reset to default">Reset</button>
         </div>
@@ -1500,9 +1915,7 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
             <div className="fai-settings-row" style={{ marginTop: 10 }}>
               <label className="fai-settings-label">Text color</label>
               <select value={currentTone} onChange={e => setTextTone(e.target.value)} className="fai-select" aria-label="Text color">
-                <option value="black">Black</option>
-                <option value="white">White</option>
-                <option value="ash">Ash</option>
+                {TEXT_COLOR_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
             </div>
             <ColorModal open={colorModal.open} label={colorModal.label}
@@ -1533,7 +1946,7 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
   );
 }
 /* ------------ Pane ------------ */
-function Pane({ active, draft, onDraftChange, onRun }) {
+function Pane({ active, draft, onDraftChange, onRun, portalRoot = null }) {
   const [busy, setBusy] = useState(false);
   const [translateSearch, setTranslateSearch] = useState("");
   const [translateMenuOpen, setTranslateMenuOpen] = useState(false);
@@ -1623,9 +2036,7 @@ function Pane({ active, draft, onDraftChange, onRun }) {
             Length
             <select className="fai-select fai-opt-select" value={opts.length}
               onChange={e => setOpts({ ...opts, length: e.target.value })}>
-              <option value="short">Short</option>
-              <option value="medium">Medium</option>
-              <option value="long">Long</option>
+              {SUMMARY_LENGTH_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select>
           </label>
         )}
@@ -1693,6 +2104,59 @@ function Pane({ active, draft, onDraftChange, onRun }) {
         </div>
       </div>
     ),
+    extract: (
+      <div className="fai-opts-stack">
+        <div className="fai-opts-section">
+          <div className="fai-opts-section-title">Extraction Mode</div>
+          <div className="fai-opts-row">
+            <label className="fai-opt-label">
+              Preset
+              <select className="fai-select fai-opt-select" value={opts.preset || "keyfacts"}
+                onChange={e => setOpts({ ...opts, preset: e.target.value })}>
+                {EXTRACT_PRESET_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </label>
+            <label className="fai-opt-label">
+              Output
+              <CascadingFormatMenu
+                opts={opts}
+                onChange={setOpts}
+                portalRoot={portalRoot}
+                formats={[
+                  {
+                    value: "list",
+                    label: "List",
+                    children: FORMAT_MENU_ITEMS.find((item) => item.value === "list")?.children || [],
+                  },
+                  { value: "table", label: "Table" },
+                  { value: "json", label: "JSON" },
+                ]}
+              />
+            </label>
+          </div>
+        </div>
+        <div className="fai-opts-section">
+          <div className="fai-opts-section-title">{opts.preset === "custom" ? "Custom Fields" : "Optional Field Hints"}</div>
+          <div className="fai-opts-row">
+            <label className="fai-opt-label">
+              Fields
+              <input
+                type="text"
+                className="fai-opt-input fai-opt-input--wide"
+                value={opts.fields || ""}
+                placeholder={opts.preset === "custom" ? "e.g. name, role, company, email" : "Optional: prioritize fields like date, amount, owner"}
+                onChange={e => setOpts({ ...opts, fields: e.target.value })}
+              />
+            </label>
+          </div>
+          <div className="fai-opts-hint">
+            {opts.preset === "custom"
+              ? "Custom Fields tells the model exactly what columns or keys to pull from the source text."
+              : "Optional field hints help narrow the extraction without switching away from the selected preset."}
+          </div>
+        </div>
+      </div>
+    ),
     proofread: (
       <span className="fai-opts-hint">Checks grammar, spelling &amp; punctuation automatically</span>
     ),
@@ -1700,22 +2164,14 @@ function Pane({ active, draft, onDraftChange, onRun }) {
       <div className="fai-opts-group">
         <label className="fai-opt-label">
           Format
-          <select className="fai-select fai-opt-select" value={opts.format || "paragraph"}
-            onChange={e => setOpts({ ...opts, format: e.target.value })}>
-            <option value="paragraph">Paragraph</option>
-            <option value="points">Bullet Points</option>
-            <option value="table">Table</option>
-            <option value="tldr">TL;DR</option>
-          </select>
+          <CascadingFormatMenu opts={opts} onChange={setOpts} portalRoot={portalRoot} />
         </label>
         <span className="fai-opts-sep">&middot;</span>
         <label className="fai-opt-label">
           Tone
           <select className="fai-select fai-opt-select" value={opts.tone || "neutral"}
             onChange={e => setOpts({ ...opts, tone: e.target.value })}>
-            <option value="formal">Formal</option>
-            <option value="neutral">Neutral</option>
-            <option value="casual">Casual</option>
+            {TONE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
           </select>
         </label>
       </div>
@@ -1725,9 +2181,7 @@ function Pane({ active, draft, onDraftChange, onRun }) {
         Tone
         <select className="fai-select fai-opt-select" value={opts.tone}
           onChange={e => setOpts({ ...opts, tone: e.target.value })}>
-          <option value="formal">Formal</option>
-          <option value="neutral">Neutral</option>
-          <option value="casual">Casual</option>
+          {TONE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select>
       </label>
     ),
@@ -1764,9 +2218,7 @@ function Pane({ active, draft, onDraftChange, onRun }) {
                 Length
                 <select className="fai-select fai-opt-select" value={opts.length}
                   onChange={e => setOpts({ ...opts, length: e.target.value })}>
-                  <option value="short">Short</option>
-                  <option value="medium">Medium</option>
-                  <option value="long">Long</option>
+                  {SUMMARY_LENGTH_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>
               </label>
             )}
@@ -1778,21 +2230,13 @@ function Pane({ active, draft, onDraftChange, onRun }) {
           <div className="fai-opts-row">
             <label className="fai-opt-label">
               Format
-              <select className="fai-select fai-opt-select" value={opts.format || "paragraph"}
-                onChange={e => setOpts({ ...opts, format: e.target.value })}>
-                <option value="paragraph">Paragraph</option>
-                <option value="points">Bullet Points</option>
-                <option value="table">Table</option>
-                <option value="tldr">TL;DR</option>
-              </select>
+              <CascadingFormatMenu opts={opts} onChange={setOpts} portalRoot={portalRoot} />
             </label>
             <label className="fai-opt-label">
               Tone
               <select className="fai-select fai-opt-select" value={opts.tone || "neutral"}
                 onChange={e => setOpts({ ...opts, tone: e.target.value })}>
-                <option value="formal">Formal</option>
-                <option value="neutral">Neutral</option>
-                <option value="casual">Casual</option>
+                {TONE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
             </label>
           </div>
@@ -1802,7 +2246,7 @@ function Pane({ active, draft, onDraftChange, onRun }) {
   }[active];
 
   return (
-    <div className="fai-pane">
+    <div className="fai-pane fai-pane--input">
       <div className="fai-opts-bar">{OptsUI}</div>
       {active === "pageinsight" ? (
         <div className="fai-page-info-card">

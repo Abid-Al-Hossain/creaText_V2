@@ -16,6 +16,10 @@
         --text:    #e2e8f0;
         --muted:   rgba(226,232,240,.5);
         --font:    system-ui, -apple-system, "Segoe UI", sans-serif;
+        --control-h: 36px;
+        --control-r: 9px;
+        --control-px: 10px;
+        --control-py: 5px;
       }
 
       html, body { width: 280px; }
@@ -78,7 +82,7 @@
       .toggle-pill { position: relative; display: inline-flex; }
       .toggle-pill input { position: absolute; opacity: 0; width: 0; height: 0; }
       .toggle-track {
-        width: 38px; height: 22px;
+        width: 40px; height: 24px;
         border-radius: 999px;
         background: var(--ctrl);
         border: 1px solid var(--border);
@@ -90,7 +94,7 @@
         content: '';
         position: absolute;
         top: 3px; left: 3px;
-        width: 14px; height: 14px;
+        width: 16px; height: 16px;
         border-radius: 50%;
         background: var(--muted);
         transition: transform .2s, background .2s, box-shadow .2s;
@@ -118,11 +122,12 @@
         align-items: center;
         justify-content: center;
         gap: 6px;
-        padding: 9px 8px;
+        min-height: var(--control-h);
+        padding: var(--control-py) var(--control-px);
         background: var(--surface);
         color: var(--text);
         border: 1px solid var(--border);
-        border-radius: 10px;
+        border-radius: var(--control-r);
         cursor: pointer;
         font: 500 12px var(--font);
         transition: background .15s, border-color .15s, box-shadow .15s;

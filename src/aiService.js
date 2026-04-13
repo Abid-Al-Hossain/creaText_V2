@@ -551,12 +551,49 @@ async function generateText(prompt, options = {}) {
 
 const SUMMARIZE_FORMAT_HINT = {
   paragraph: "Format the summary as a clean, flowing paragraph.",
-  points:    "Format the summary as concise bullet points (use * as the bullet marker).",
+  list:      "Format the summary as a list.",
   table:     "Format the summary as a Markdown table with two columns: Topic and Detail.",
   tldr:      "Format the summary as a single ultra-brief TL;DR sentence, prefixed with \"TL;DR:\".",
 };
 
-async function summarize(text, { words, length, format, tone } = {}) {
+function normalizeListFormat(format, listType, listStyle) {
+  const nextFormat = format === "points" ? "list" : format;
+  const nextListType = listType || "unordered";
+  const nextListStyle = listStyle || (nextListType === "ordered" ? "number" : "dash");
+  return { format: nextFormat, listType: nextListType, listStyle: nextListStyle };
+}
+
+function getListInstruction(listType) {
+  return listType === "ordered"
+    ? "Format as an ordered list."
+    : "Format as an unordered list.";
+}
+
+function getListStyleInstruction(listType, listStyle) {
+  if (listType === "ordered") {
+    switch (listStyle) {
+      case "lower-alpha": return "Use lower alphabetic markers (a., b., c.).";
+      case "upper-alpha": return "Use upper alphabetic markers (A., B., C.).";
+      case "lower-roman": return "Use lower Roman numerals (i., ii., iii.).";
+      case "upper-roman": return "Use upper Roman numerals (I., II., III.).";
+      default: return "Use numeric markers (1., 2., 3.).";
+    }
+  }
+
+  switch (listStyle) {
+    case "dash": return "Use dash markers (-) for each item.";
+    default: return "Use dash markers (-) for each item.";
+  }
+}
+
+function getNestedListInstruction() {
+  return "If a list contains sub-items, indent each nested list level clearly under its parent item using standard markdown-style nesting.";
+}
+
+async function summarize(text, { words, length, format, listType, listStyle, tone } = {}) {
+  const normalized = normalizeListFormat(format, listType, listStyle);
+  const finalFormat = normalized.format;
+  const finalListType = normalized.listType;
   const lengthHint =
     typeof words === "number" && words > 0
       ? `in approximately ${words} words`
@@ -566,7 +603,10 @@ async function summarize(text, { words, length, format, tone } = {}) {
           ? "in a detailed, thorough paragraph"
           : "in a concise paragraph (4-6 sentences)";
 
-  const formatHint = SUMMARIZE_FORMAT_HINT[format] || SUMMARIZE_FORMAT_HINT.paragraph;
+  const formatHint =
+    finalFormat === "list"
+      ? `${getListInstruction(finalListType)} ${getListStyleInstruction(finalListType, normalized.listStyle)} ${getNestedListInstruction()}`
+      : (SUMMARIZE_FORMAT_HINT[finalFormat] || SUMMARIZE_FORMAT_HINT.paragraph);
   const toneHint   = REWRITE_TONE_HINTS[tone]      || "";
 
   return generateText(
@@ -578,6 +618,56 @@ async function translate(text, { from = "auto", to = "en" } = {}) {
   const fromHint = from && from !== "auto" ? ` from ${from}` : "";
   return generateText(
     `Translate the following text${fromHint} to ${to}. Return only the translated text with no explanation:\n\n${text}`
+  );
+}
+
+const EXTRACT_PRESET_PROMPTS = {
+  keyfacts: "Extract the most important factual points.",
+  entities: "Extract the key people, organizations, places, and notable items.",
+  contacts: "Extract contact details such as names, roles, companies, email addresses, phone numbers, and links.",
+  actionitems: "Extract action items, owners, deadlines, and follow-ups.",
+  timeline: "Extract timeline events, dates, and what happened.",
+  faq: "Extract the content into concise question-and-answer pairs.",
+  custom: "Extract only the fields explicitly requested by the user.",
+};
+
+const EXTRACT_FORMAT_HINTS = {
+  table: "Return the extracted information as a concise Markdown table with clear column headers.",
+  json: "Return the extracted information as valid JSON only, with no markdown fences or commentary.",
+  list: "Return the extracted information as a list.",
+};
+
+async function extract(text, { preset = "keyfacts", fields = "", format = "table", listType, listStyle } = {}) {
+  const normalized = normalizeListFormat(format, listType, listStyle);
+  const finalFormat = normalized.format;
+  const finalListType = normalized.listType;
+  const presetInstruction = EXTRACT_PRESET_PROMPTS[preset] || EXTRACT_PRESET_PROMPTS.keyfacts;
+  let formatInstruction =
+    finalFormat === "list"
+      ? `${getListInstruction(finalListType)} ${getListStyleInstruction(finalListType, normalized.listStyle)} ${getNestedListInstruction()}`
+      : (EXTRACT_FORMAT_HINTS[finalFormat] || EXTRACT_FORMAT_HINTS.table);
+  if (preset === "faq") {
+    if (finalFormat === "table") {
+      formatInstruction = "Return a Markdown table with two columns: Question and Answer.";
+    } else if (finalFormat === "json") {
+      formatInstruction = "Return a JSON array of objects with keys: question, answer. No markdown fences.";
+    } else if (finalFormat === "list") {
+      formatInstruction =
+        finalListType === "ordered"
+          ? "Return FAQ pairs in this exact pattern:\n1. Q: ...\n   A: ...\nRepeat with 2., 3., etc."
+          : "Return FAQ pairs in this exact pattern:\n* Q: ...\n  A: ...\nRepeat for each pair. Use * only for the question line.";
+    }
+  }
+  const fieldInstruction =
+    preset === "custom" && String(fields || "").trim()
+      ? `Extract these fields only: ${String(fields).trim()}.`
+      : String(fields || "").trim()
+        ? `Prioritize these fields if they are available: ${String(fields).trim()}.`
+        : "";
+
+  return generateText(
+    `${presetInstruction} ${fieldInstruction} ${formatInstruction} Omit anything that is not supported by the source text. Return only the extracted output with no preamble:\n\n${text}`,
+    { temperature: 0.2, maxTokens: 4096 }
   );
 }
 
@@ -715,7 +805,7 @@ async function proofread(text) {
 
 const REWRITE_FORMAT_PROMPTS = {
   paragraph: "Rewrite the following text as a clean, well-structured paragraph. Preserve the core meaning.",
-  points:    "Rewrite the following text as concise bullet points (use * as the bullet marker). Preserve the core meaning.",
+  list:      "Rewrite the following text as a list. Preserve the core meaning.",
   table:     "Convert the following text into a concise Markdown table with clear column headers.",
   tldr:      "Condense the following text into a single TL;DR sentence, prefixed with \"TL;DR:\".",
 };
@@ -726,8 +816,14 @@ const REWRITE_TONE_HINTS = {
   casual:  "Use a casual, friendly, conversational tone.",
 };
 
-async function rewrite(text, { format = "paragraph", tone = "neutral" } = {}) {
-  const formatInstruction = REWRITE_FORMAT_PROMPTS[format] || REWRITE_FORMAT_PROMPTS.paragraph;
+async function rewrite(text, { format = "paragraph", listType, listStyle, tone = "neutral" } = {}) {
+  const normalized = normalizeListFormat(format, listType, listStyle);
+  const finalFormat = normalized.format;
+  const finalListType = normalized.listType;
+  const formatInstruction =
+    finalFormat === "list"
+      ? `${getListInstruction(finalListType)} ${getListStyleInstruction(finalListType, normalized.listStyle)} ${getNestedListInstruction()}`
+      : (REWRITE_FORMAT_PROMPTS[finalFormat] || REWRITE_FORMAT_PROMPTS.paragraph);
   const toneInstruction   = REWRITE_TONE_HINTS[tone]   || REWRITE_TONE_HINTS.neutral;
   return generateText(
     `${formatInstruction} ${toneInstruction} Return only the rewritten text:\n\n${text}`,
@@ -771,6 +867,7 @@ export async function handleAiMessage(message) {
     const { op, text, options } = message;
     if (op === "summarize") return summarize(text, options);
     if (op === "translate") return translate(text, options);
+    if (op === "extract") return extract(text, options);
     if (op === "proofread") return proofread(text);
     if (op === "rewrite") return rewrite(text, options);
     if (op === "write") return write(text, options);
