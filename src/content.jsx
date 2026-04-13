@@ -12,7 +12,7 @@ import {
   getGroqModelLabel,
 } from "./providerCatalog";
 import {
-  summarize, translate, extract, rewrite, proofread, write,
+  summarize, summarizeStream, translate, translateStream, extract, rewrite, rewriteStream, proofread, write, writeStream,
   getAiSettings, saveAiSettings,
 } from "./aiBuiltins";
 
@@ -335,7 +335,7 @@ function parseMarkdownBlocks(text) {
   let i = 0;
 
   const getTrimmed = (line) => String(line || "").trim();
-  const isListLine = (line) => /^(\s*)(?:[-*]|\d+[.)]|[A-Za-z][.)]|[ivxlcdmIVXLCDM]+[.)])\s+/.test(String(line || ""));
+  const isListLine = (line) => /^(\s*)(?:[-*+]|\d+[.)]|[A-Za-z][.)]|[ivxlcdmIVXLCDM]+[.)])\s+/.test(String(line || ""));
 
   while (i < lines.length) {
     const currentLine = lines[i];
@@ -394,13 +394,13 @@ function parseNestedList(lines) {
     const line = String(rawLine || "");
     if (!line.trim()) continue;
 
-    const match = line.match(/^(\s*)([-*]|\d+[.)]|[A-Za-z][.)]|[ivxlcdmIVXLCDM]+[.)])\s+(.*)$/);
+    const match = line.match(/^(\s*)([-*+]|\d+[.)]|[A-Za-z][.)]|[ivxlcdmIVXLCDM]+[.)])\s+(.*)$/);
     if (!match) continue;
 
     const indent = match[1].replace(/\t/g, "    ").length;
     const marker = match[2];
     const content = match[3].trim();
-    const ordered = !/^[-*]$/.test(marker);
+    const ordered = !/^[-*+]$/.test(marker);
     const node = { content, ordered, children: [] };
 
     while (stack.length > 1 && indent <= stack[stack.length - 1].indent) {
@@ -436,6 +436,8 @@ const FORMAT_MENU_ITEMS = [
         label: "Unordered",
         children: [
           { value: "dash", label: "Dash (-)" },
+          { value: "asterisk", label: "Asterisk (*)" },
+          { value: "plus", label: "Plus (+)" },
         ],
       },
       {
@@ -813,7 +815,7 @@ function ColorModal({ open, label, value, rawValue, onLive, onConfirm, onClear, 
 }
 
 /* ------------ Result Card ------------ */
-function ResultCard({ text, meta }) {
+function ResultCard({ text, meta, streaming = false }) {
   const [copied, setCopied] = useState(false);
   const blocks = parseMarkdownBlocks(text);
   const handleCopy = async () => {
@@ -821,12 +823,17 @@ function ResultCard({ text, meta }) {
     if (ok) { setCopied(true); setTimeout(() => setCopied(false), 2000); }
   };
   return (
-    <motion.div className="fai-result"
+    <motion.div className={`fai-result${streaming ? " fai-result--streaming" : ""}`}
       initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
       transition={SPRING_SOFT}>
       {meta?.bestEffort && (
         <div className="fai-result-meta">
           Responded via <b>{getResultModelLabel(meta)}</b>
+        </div>
+      )}
+      {streaming && (
+        <div className="fai-result-meta fai-result-meta--streaming">
+          Streaming output...
         </div>
       )}
       {blocks.map((block, idx) => {
@@ -864,7 +871,7 @@ function ResultCard({ text, meta }) {
         );
       })}
       <button className={`fai-copy-btn${copied ? " fai-copy-btn--copied" : ""}`}
-        onClick={handleCopy} title="Copy to clipboard" aria-label="Copy result">
+        onClick={handleCopy} title="Copy to clipboard" aria-label="Copy result" disabled={streaming}>
         {copied ? "Copied" : "Copy"}
       </button>
     </motion.div>
@@ -914,6 +921,8 @@ function App() {
   const drawerRef = useRef(null);
   const workspaceRef = useRef(null);
   const runTokenRef = useRef(0);
+  const revealTimerRef = useRef(null);
+  const streamAbortRef = useRef(null);
   const activeRef = useRef(active);
   const showSettingsRef = useRef(showSettings);
   const lastRunRef = useRef(null);
@@ -926,6 +935,14 @@ function App() {
   const showInputPane = !useSideBySideResults || hiddenWidePane !== "input";
   const showOutputPane = !useSideBySideResults || hiddenWidePane !== "output";
   const clearOutput = () => {
+    if (streamAbortRef.current) {
+      streamAbortRef.current.abort();
+      streamAbortRef.current = null;
+    }
+    if (revealTimerRef.current) {
+      clearTimeout(revealTimerRef.current);
+      revealTimerRef.current = null;
+    }
     setResults([]);
     setStatusMsg("");
     setFallbackNotice(null);
@@ -1229,9 +1246,72 @@ function App() {
     }));
   }, []);
 
+  const cancelReveal = useCallback(() => {
+    if (revealTimerRef.current) {
+      clearTimeout(revealTimerRef.current);
+      revealTimerRef.current = null;
+    }
+  }, []);
+
+  const cancelStream = useCallback(() => {
+    if (streamAbortRef.current) {
+      streamAbortRef.current.abort();
+      streamAbortRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => {
+    cancelReveal();
+    cancelStream();
+  }, [cancelReveal, cancelStream]);
+
+  const revealResultText = useCallback((token, op, text, meta) => (
+    new Promise((resolve) => {
+      cancelReveal();
+      const finalText = String(text || "");
+      const resultId = Date.now();
+
+      if (!finalText) {
+        setResults([{ id: resultId, text: "", meta, streaming: false }]);
+        resolve();
+        return;
+      }
+
+      let cursor = 0;
+      setResults([{ id: resultId, text: "", meta, streaming: true }]);
+
+      const tick = () => {
+        if (token !== runTokenRef.current || activeRef.current !== op || showSettingsRef.current) {
+          cancelReveal();
+          resolve();
+          return;
+        }
+
+        const remaining = finalText.length - cursor;
+        if (remaining <= 0) {
+          setResults([{ id: resultId, text: finalText, meta, streaming: false }]);
+          cancelReveal();
+          resolve();
+          return;
+        }
+
+        const chunkSize = clamp(Math.ceil(remaining / 22), 8, 48);
+        cursor = Math.min(finalText.length, cursor + chunkSize);
+        const partial = finalText.slice(0, cursor);
+        const done = cursor >= finalText.length;
+        setResults([{ id: resultId, text: partial, meta, streaming: !done }]);
+        revealTimerRef.current = setTimeout(tick, done ? 0 : 18);
+      };
+
+      tick();
+    })
+  ), [cancelReveal]);
+
   /* --- Run AI --- */
   const runOp = async (op, text, opts, { skipFallbackPrompt = false } = {}) => {
     lastRunRef.current = { op, text, opts };
+    cancelStream();
+    cancelReveal();
     setFallbackNotice(null);
     if (op !== "pageinsight" && !text?.trim()) { setStatusMsg("Please enter some text."); setTimeout(() => setStatusMsg(""), 2000); return; }
     const token = ++runTokenRef.current;
@@ -1241,7 +1321,122 @@ function App() {
     try {
       let result = "";
       let meta = null;
-      if      (op === "summarize") {
+      const supportsTrueStreaming =
+        aiMode !== "best_effort" &&
+        ["summarize", "translate", "rewrite", "write", "pageinsight"].includes(op);
+
+      if (supportsTrueStreaming) {
+        const abortController = new AbortController();
+        streamAbortRef.current = abortController;
+        const resultId = Date.now();
+        let streamedText = "";
+        let streamedMeta = null;
+        let didReceiveFirstChunk = false;
+        const applyStreamState = (nextText, nextMeta, streaming) => {
+          if (token !== runTokenRef.current || activeRef.current !== op || showSettingsRef.current) return;
+          setResults([{ id: resultId, text: nextText, meta: nextMeta, streaming }]);
+        };
+        const handleStreamChunk = (chunk, nextMeta) => {
+          streamedText += chunk;
+          streamedMeta = nextMeta || streamedMeta;
+          applyStreamState(streamedText, streamedMeta, true);
+          if (!didReceiveFirstChunk) {
+            didReceiveFirstChunk = true;
+            setStatusMsg("Streaming...", false);
+          }
+        };
+
+        if (op === "summarize") {
+          const summaryOpts = opts.summaryMode === "length"
+            ? { length: opts.length }
+            : { words: opts.words };
+          const res = await summarizeStream(text, summaryOpts, {
+            signal: abortController.signal,
+            onStart(nextMeta) {
+              streamedMeta = nextMeta || streamedMeta;
+              applyStreamState(streamedText, streamedMeta, true);
+            },
+            onChunk(chunk, nextMeta) {
+              handleStreamChunk(chunk, nextMeta);
+            },
+          });
+          result = res?.text || streamedText;
+          meta = res?.meta || streamedMeta;
+        }
+        else if (op === "translate") {
+          const res = await translateStream(text, { to: opts.lang || "en" }, {
+            signal: abortController.signal,
+            onStart(nextMeta) {
+              streamedMeta = nextMeta || streamedMeta;
+              applyStreamState(streamedText, streamedMeta, true);
+            },
+            onChunk(chunk, nextMeta) {
+              handleStreamChunk(chunk, nextMeta);
+            },
+          });
+          result = res?.text || streamedText;
+          meta = res?.meta || streamedMeta;
+        }
+        else if (op === "rewrite") {
+          const res = await rewriteStream(text, {
+            format: opts.format || "paragraph",
+            listType: opts.listType || "unordered",
+            listStyle: opts.listStyle || "dash",
+            tone: opts.tone || "neutral",
+          }, {
+            signal: abortController.signal,
+            onStart(nextMeta) {
+              streamedMeta = nextMeta || streamedMeta;
+              applyStreamState(streamedText, streamedMeta, true);
+            },
+            onChunk(chunk, nextMeta) {
+              handleStreamChunk(chunk, nextMeta);
+            },
+          });
+          result = res?.text || streamedText;
+          meta = res?.meta || streamedMeta;
+        }
+        else if (op === "write") {
+          const res = await writeStream(text, { tone: opts.tone || "neutral" }, {
+            signal: abortController.signal,
+            onStart(nextMeta) {
+              streamedMeta = nextMeta || streamedMeta;
+              applyStreamState(streamedText, streamedMeta, true);
+            },
+            onChunk(chunk, nextMeta) {
+              handleStreamChunk(chunk, nextMeta);
+            },
+          });
+          result = res?.text || streamedText;
+          meta = res?.meta || streamedMeta;
+        }
+        else if (op === "pageinsight") {
+          const pageText = scrapePageContent();
+          if (!pageText || pageText.length < 50) throw new Error("Could not extract readable content from this page.");
+          const summaryOpts = opts.summaryMode === "length" ? { length: opts.length } : { words: opts.words };
+          const res = await summarizeStream(pageText, {
+            ...summaryOpts,
+            format: opts.format || "paragraph",
+            listType: opts.listType || "unordered",
+            listStyle: opts.listStyle || "dash",
+            tone: opts.tone || "neutral",
+          }, {
+            signal: abortController.signal,
+            onStart(nextMeta) {
+              streamedMeta = nextMeta || streamedMeta;
+              applyStreamState(streamedText, streamedMeta, true);
+            },
+            onChunk(chunk, nextMeta) {
+              handleStreamChunk(chunk, nextMeta);
+            },
+          });
+          result = res?.text || streamedText;
+          meta = res?.meta || streamedMeta;
+        }
+
+        streamAbortRef.current = null;
+      }
+      else if (op === "summarize") {
         const summaryOpts = opts.summaryMode === "length"
           ? { length: opts.length }
           : { words: opts.words };
@@ -1259,7 +1454,7 @@ function App() {
           preset: opts.preset || "keyfacts",
           format: opts.format || "table",
           listType: opts.listType || "unordered",
-          listStyle: opts.listStyle || "disc",
+          listStyle: opts.listStyle || "dash",
           fields: opts.fields || "",
         });
         result = res?.text || "";
@@ -1277,7 +1472,7 @@ function App() {
         const res = await rewrite(text, {
           format: opts.format || "paragraph",
           listType: opts.listType || "unordered",
-          listStyle: opts.listStyle || "disc",
+          listStyle: opts.listStyle || "dash",
           tone: opts.tone || "neutral",
         });
         result = res?.text || "";
@@ -1296,7 +1491,7 @@ function App() {
           ...summaryOpts,
           format: opts.format || "paragraph",
           listType: opts.listType || "unordered",
-          listStyle: opts.listStyle || "disc",
+          listStyle: opts.listStyle || "dash",
           tone: opts.tone || "neutral",
         });
         result = res?.text || "";
@@ -1304,7 +1499,12 @@ function App() {
       }
 
       if (token !== runTokenRef.current || activeRef.current !== op || showSettingsRef.current) return;
-      setResults([{ id: Date.now(), text: result, meta }]);
+      if (supportsTrueStreaming) {
+        setResults([{ id: Date.now(), text: result, meta, streaming: false }]);
+      } else {
+        await revealResultText(token, op, result, meta);
+      }
+      if (token !== runTokenRef.current || activeRef.current !== op || showSettingsRef.current) return;
       if (meta?.bestEffort && meta?.attempted?.length) {
         const providerLabel = meta.provider === "openrouter" ? "OpenRouter" : meta.provider === "groq" ? "Groq" : "Gemini";
         setStatusMsg(`Best Effort finished via ${providerLabel}.`, false);
@@ -1315,7 +1515,9 @@ function App() {
       }
       setTimeout(() => setStatusMsg(""), 3000);
     } catch (err) {
+      streamAbortRef.current = null;
       if (token !== runTokenRef.current || activeRef.current !== op || showSettingsRef.current) return;
+      if (String(err?.message || "") === "AI stream cancelled.") return;
       if (String(err.message || "").startsWith("NO_API_KEY:")) {
         const provider = String(err.message || "").split(":")[1];
         const providerLabel = provider === "groq" ? "Groq" : provider === "openrouter" ? "OpenRouter" : "Gemini";
@@ -1618,7 +1820,7 @@ function App() {
                           </div>
                           <div className="fai-results fai-results--side">
                             {hasResults
-                              ? results.map(r => <ResultCard key={r.id} text={r.text} meta={r.meta} />)
+                              ? results.map(r => <ResultCard key={r.id} text={r.text} meta={r.meta} streaming={r.streaming} />)
                               : <div className="fai-results-empty">Output will appear here.</div>
                             }
                           </div>
@@ -1644,7 +1846,7 @@ function App() {
                           </div>
                           <div className="fai-results">
                             {hasResults
-                              ? results.map(r => <ResultCard key={r.id} text={r.text} meta={r.meta} />)
+                              ? results.map(r => <ResultCard key={r.id} text={r.text} meta={r.meta} streaming={r.streaming} />)
                               : <div className="fai-results-empty">Output will appear here.</div>
                             }
                           </div>

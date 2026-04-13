@@ -138,6 +138,10 @@ function getGeminiUrl(model, key) {
   return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
 }
 
+function getGeminiStreamUrl(model, key) {
+  return `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${key}`;
+}
+
 function getModeProvider(mode) {
   if (mode === "speed") return "groq";
   if (mode === "best_effort") return "openrouter";
@@ -420,6 +424,216 @@ async function generateOpenRouterText(prompt, apiKey, options = {}) {
   return { text, actualModel: data?.model || body.model };
 }
 
+async function readSseStream(response, { signal, onData }) {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("Streaming response body is unavailable.");
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split(/\r?\n\r?\n/);
+    buffer = events.pop() || "";
+
+    for (const eventText of events) {
+      const dataLines = eventText
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trim())
+        .filter(Boolean);
+
+      if (!dataLines.length) continue;
+      const payload = dataLines.join("\n");
+      if (payload === "[DONE]") return;
+      onData(payload);
+    }
+  }
+
+  if (buffer.trim()) {
+    const dataLines = buffer
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trim())
+      .filter(Boolean);
+    for (const payload of dataLines) {
+      if (payload === "[DONE]") return;
+      onData(payload);
+    }
+  }
+}
+
+function getDeltaFromAggregate(nextText, state) {
+  const safeNext = String(nextText || "");
+  const previous = state.text || "";
+  if (!safeNext) return "";
+  if (safeNext.startsWith(previous)) {
+    state.text = safeNext;
+    return safeNext.slice(previous.length);
+  }
+  state.text = previous + safeNext;
+  return safeNext;
+}
+
+async function streamGeminiText(prompt, apiKey, options = {}, handlers = {}) {
+  const model = normalizeGeminiModel(options.model);
+  const generationConfig = {
+    temperature: options.temperature ?? 0.7,
+    maxOutputTokens: options.maxTokens ?? 2048,
+  };
+  const state = { text: "" };
+
+  let res;
+  try {
+    res = await fetch(getGeminiStreamUrl(model, apiKey), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig,
+      }),
+      signal: handlers.signal,
+    });
+  } catch {
+    const error = new Error("Gemini network request failed. Check your connection, VPN, or firewall.");
+    error.retriable = true;
+    throw error;
+  }
+
+  if (!res.ok) {
+    let apiMessage = "";
+    try {
+      const err = await res.json();
+      apiMessage = err?.error?.message || "";
+    } catch {}
+    const error = new Error(getFriendlyError("gemini", res.status, apiMessage));
+    error.retriable = isRetriableStatus(res.status);
+    throw error;
+  }
+
+  handlers.onStart?.({ provider: "gemini", model });
+
+  await readSseStream(res, {
+    signal: handlers.signal,
+    onData(payload) {
+      const data = JSON.parse(payload);
+      if (data?.promptFeedback?.blockReason) {
+        throw new Error(`Prompt blocked by Gemini: ${data.promptFeedback.blockReason}.`);
+      }
+      const candidate = data?.candidates?.[0];
+      if (!candidate) return;
+      const finishReasonError = getGeminiFinishReasonError(candidate.finishReason);
+      if (finishReasonError) throw new Error(finishReasonError);
+      const delta = getDeltaFromAggregate(getGeminiCandidateText(candidate), state);
+      if (delta) handlers.onChunk?.(delta, { provider: "gemini", model });
+    },
+  });
+
+  if (!state.text.trim()) throw new Error("Gemini returned an empty response.");
+  return { text: state.text, actualModel: model };
+}
+
+async function streamOpenAiCompatibleText(url, provider, prompt, apiKey, options = {}, handlers = {}) {
+  const model =
+    provider === "groq"
+      ? normalizeGroqModel(options.model || DEFAULT_GROQ_MODEL)
+      : (options.model || OPENROUTER_FREE_MODEL);
+
+  const body = {
+    model,
+    messages: [],
+    temperature: options.temperature ?? 0.7,
+    stream: true,
+  };
+
+  if (provider === "groq") {
+    if (options.systemPrompt) body.messages.push({ role: "system", content: options.systemPrompt });
+    body.messages.push({ role: "user", content: prompt });
+    body.max_completion_tokens = getGroqMaxCompletionTokens(model, prompt, options.maxTokens ?? 2048);
+    if (GPT_OSS_MODELS.has(model) && estimateTokens(prompt) + body.max_completion_tokens > 7600) {
+      throw new Error(getGroqTooLargeError(model));
+    }
+  } else {
+    body.messages = [{ role: "user", content: prompt }];
+    body.max_tokens = options.maxTokens ?? 2048;
+    body.provider = {
+      allow_fallbacks: true,
+      require_parameters: false,
+    };
+  }
+
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+        ...(provider === "openrouter"
+          ? {
+              "HTTP-Referer": "https://github.com/Abid-Al-Hossain/creaText_V2",
+              "X-OpenRouter-Title": "CreaText V2",
+            }
+          : {}),
+      },
+      body: JSON.stringify(body),
+      signal: handlers.signal,
+    });
+  } catch {
+    const error = new Error(`${PROVIDER_META[provider].label} network request failed. Check your connection, VPN, or firewall.`);
+    error.retriable = true;
+    throw error;
+  }
+
+  if (provider === "groq") {
+    await saveGroqRateLimitSnapshot(res.headers, body.model);
+  }
+
+  if (!res.ok) {
+    let apiMessage = "";
+    try {
+      const err = await res.json();
+      apiMessage = err?.error?.message || err?.message || "";
+    } catch {}
+    if (provider === "groq" && /too big|too large|request too/i.test(apiMessage) && GPT_OSS_MODELS.has(model)) {
+      const error = new Error(getGroqTooLargeError(model));
+      error.retriable = false;
+      throw error;
+    }
+    const error = new Error(getFriendlyError(provider, res.status, apiMessage));
+    error.retriable = isRetriableStatus(res.status);
+    throw error;
+  }
+
+  const actualModel = provider === "openrouter" ? (res.headers.get("x-openrouter-model") || model) : model;
+  handlers.onStart?.({ provider, model: actualModel });
+
+  let text = "";
+  await readSseStream(res, {
+    signal: handlers.signal,
+    onData(payload) {
+      const data = JSON.parse(payload);
+      const choice = data?.choices?.[0];
+      if (!choice) return;
+      const finishReasonError = getOpenAiFinishReasonError(choice.finish_reason, PROVIDER_META[provider].label);
+      if (finishReasonError) throw new Error(finishReasonError);
+      const refusal = choice?.message?.refusal || choice?.delta?.refusal;
+      if (refusal) throw new Error(`${PROVIDER_META[provider].label} refused the request: ${refusal}`);
+      const delta = typeof choice?.delta?.content === "string" ? choice.delta.content : "";
+      if (!delta) return;
+      text += delta;
+      handlers.onChunk?.(delta, { provider, model: actualModel });
+    },
+  });
+
+  if (!text.trim()) throw new Error(`${PROVIDER_META[provider].label} returned an empty response.`);
+  return { text, actualModel };
+}
+
 async function getRuntimeConfig() {
   const store = await storageGetMany({
     ai_provider_mode: "accuracy",
@@ -448,6 +662,16 @@ async function runTextWithProvider(provider, apiKey, prompt, options = {}) {
   if (provider === "groq") return generateGroqText(prompt, apiKey, options);
   if (provider === "openrouter") return generateOpenRouterText(prompt, apiKey, options);
   return generateGeminiText(prompt, apiKey, options);
+}
+
+async function streamTextWithProvider(provider, apiKey, prompt, options = {}, handlers = {}) {
+  if (provider === "groq") {
+    return streamOpenAiCompatibleText(GROQ_CHAT_URL, "groq", prompt, apiKey, options, handlers);
+  }
+  if (provider === "openrouter") {
+    return streamOpenAiCompatibleText(OPENROUTER_CHAT_URL, "openrouter", prompt, apiKey, options, handlers);
+  }
+  return streamGeminiText(prompt, apiKey, options, handlers);
 }
 
 function getBestEffortAttempts(runtime) {
@@ -581,8 +805,64 @@ function getListStyleInstruction(listType, listStyle) {
   }
 
   switch (listStyle) {
+    case "asterisk": return "Use asterisk markers (*) for each item.";
+    case "plus": return "Use plus markers (+) for each item.";
     case "dash": return "Use dash markers (-) for each item.";
     default: return "Use dash markers (-) for each item.";
+  }
+}
+
+async function generateTextStream(prompt, options = {}, handlers = {}) {
+  const runtime = await getRuntimeConfig();
+  if (runtime.mode === "best_effort") throw new Error("STREAM_UNSUPPORTED:best_effort");
+
+  const provider = runtime.provider;
+  const apiKey = provider === "groq" ? runtime.groqApiKey : runtime.geminiApiKey;
+  if (!apiKey) throw new Error(`NO_API_KEY:${provider}`);
+
+  let emitted = false;
+  const streamHandlers = {
+    signal: handlers.signal,
+    onStart: handlers.onStart,
+    onChunk(chunk, meta) {
+      emitted = true;
+      handlers.onChunk?.(chunk, meta);
+    },
+  };
+
+  try {
+    const res = await streamTextWithProvider(provider, apiKey, prompt, {
+      ...options,
+      model: provider === "gemini" ? runtime.accuracyModel : runtime.speedModel,
+    }, streamHandlers);
+    return {
+      text: res.text,
+      meta: {
+        provider,
+        model: res.actualModel || (provider === "gemini" ? runtime.accuracyModel : runtime.speedModel),
+      },
+    };
+  } catch (error) {
+    const shouldFallback =
+      !emitted &&
+      provider === "gemini" &&
+      runtime.groqApiKey &&
+      /Gemini (server error \((502|503|504)\)|network request failed)/i.test(error?.message || "");
+
+    if (!shouldFallback) throw error;
+
+    const res = await streamTextWithProvider("groq", runtime.groqApiKey, prompt, {
+      ...options,
+      model: runtime.speedModel,
+    }, {
+      signal: handlers.signal,
+      onStart: handlers.onStart,
+      onChunk: handlers.onChunk,
+    });
+    return {
+      text: res.text,
+      meta: { provider: "groq", fallbackFrom: "gemini", model: res.actualModel || runtime.speedModel },
+    };
   }
 }
 
@@ -614,10 +894,45 @@ async function summarize(text, { words, length, format, listType, listStyle, ton
   );
 }
 
+async function summarizeStream(text, { words, length, format, listType, listStyle, tone } = {}, handlers = {}) {
+  const normalized = normalizeListFormat(format, listType, listStyle);
+  const finalFormat = normalized.format;
+  const finalListType = normalized.listType;
+  const lengthHint =
+    typeof words === "number" && words > 0
+      ? `in approximately ${words} words`
+      : length === "short"
+        ? "in 2-3 sentences"
+        : length === "long"
+          ? "in a detailed, thorough paragraph"
+          : "in a concise paragraph (4-6 sentences)";
+
+  const formatHint =
+    finalFormat === "list"
+      ? `${getListInstruction(finalListType)} ${getListStyleInstruction(finalListType, normalized.listStyle)} ${getNestedListInstruction()}`
+      : (SUMMARIZE_FORMAT_HINT[finalFormat] || SUMMARIZE_FORMAT_HINT.paragraph);
+  const toneHint = REWRITE_TONE_HINTS[tone] || "";
+
+  return generateTextStream(
+    `Summarize the following text ${lengthHint}. ${formatHint}${toneHint ? ` ${toneHint}` : ""} Return only the summary with no preamble or labels:\n\n${text}`,
+    {},
+    handlers
+  );
+}
+
 async function translate(text, { from = "auto", to = "en" } = {}) {
   const fromHint = from && from !== "auto" ? ` from ${from}` : "";
   return generateText(
     `Translate the following text${fromHint} to ${to}. Return only the translated text with no explanation:\n\n${text}`
+  );
+}
+
+async function translateStream(text, { from = "auto", to = "en" } = {}, handlers = {}) {
+  const fromHint = from && from !== "auto" ? ` from ${from}` : "";
+  return generateTextStream(
+    `Translate the following text${fromHint} to ${to}. Return only the translated text with no explanation:\n\n${text}`,
+    {},
+    handlers
   );
 }
 
@@ -831,10 +1146,34 @@ async function rewrite(text, { format = "paragraph", listType, listStyle, tone =
   );
 }
 
+async function rewriteStream(text, { format = "paragraph", listType, listStyle, tone = "neutral" } = {}, handlers = {}) {
+  const normalized = normalizeListFormat(format, listType, listStyle);
+  const finalFormat = normalized.format;
+  const finalListType = normalized.listType;
+  const formatInstruction =
+    finalFormat === "list"
+      ? `${getListInstruction(finalListType)} ${getListStyleInstruction(finalListType, normalized.listStyle)} ${getNestedListInstruction()}`
+      : (REWRITE_FORMAT_PROMPTS[finalFormat] || REWRITE_FORMAT_PROMPTS.paragraph);
+  const toneInstruction = REWRITE_TONE_HINTS[tone] || REWRITE_TONE_HINTS.neutral;
+  return generateTextStream(
+    `${formatInstruction} ${toneInstruction} Return only the rewritten text:\n\n${text}`,
+    { temperature: 0.6 },
+    handlers
+  );
+}
+
 async function write(taskPrompt, { tone = "neutral" } = {}) {
   return generateText(
     `Write high-quality content based on the following prompt. Use a ${tone} tone. Return only the written content with no meta-commentary:\n\n${taskPrompt}`,
     { temperature: 0.8, maxTokens: 4096 }
+  );
+}
+
+async function writeStream(taskPrompt, { tone = "neutral" } = {}, handlers = {}) {
+  return generateTextStream(
+    `Write high-quality content based on the following prompt. Use a ${tone} tone. Return only the written content with no meta-commentary:\n\n${taskPrompt}`,
+    { temperature: 0.8, maxTokens: 4096 },
+    handlers
   );
 }
 
@@ -875,4 +1214,29 @@ export async function handleAiMessage(message) {
   }
 
   return undefined;
+}
+
+export async function handleAiStream(message, handlers = {}) {
+  const { op, text, options } = message || {};
+  if (op === "summarize") {
+    const result = await summarizeStream(text, options, handlers);
+    handlers.onDone?.(result);
+    return result;
+  }
+  if (op === "translate") {
+    const result = await translateStream(text, options, handlers);
+    handlers.onDone?.(result);
+    return result;
+  }
+  if (op === "rewrite") {
+    const result = await rewriteStream(text, options, handlers);
+    handlers.onDone?.(result);
+    return result;
+  }
+  if (op === "write") {
+    const result = await writeStream(text, options, handlers);
+    handlers.onDone?.(result);
+    return result;
+  }
+  throw new Error("Unknown or unsupported AI streaming operation.");
 }

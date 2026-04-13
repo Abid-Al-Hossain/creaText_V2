@@ -1,54 +1,74 @@
-# 💠 CreaText V2
+# CreaText V2
 
 [![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](https://opensource.org/licenses/ISC)
 [![Version](https://img.shields.io/badge/Version-2.0.0-purple.svg)]()
 [![Manifest](https://img.shields.io/badge/Manifest-V3-green.svg)]()
 
-**CreaText V2** is a premium, lightweight AI writing toolkit injected directly into your browser. Designed for professionals who need high-performance AI tools without the distraction of switching tabs, it offers a seamless, floating interface that lives where you write.
+CreaText V2 is a lightweight AI writing toolkit injected directly into the browser. It provides a floating workspace for summarizing, translating, rewriting, extracting, proofreading, and generating text without forcing the user to leave the current page.
 
 ---
 
-## ✨ Features at a Glance
+## Features
 
-A carefully curated suite of tools designed for the modern web:
-
--   **◈ Summarize**: Instant condensation of long-form content into paragraphs, lists, or tables.
--   **◈ Translate**: Context-aware translation supporting 30+ common languages.
--   **◈ Proofread**: Deep grammatical auditing with clear change logs and structural corrections.
--   **◈ Rewrite**: Dynamic rephrasing with independent control over **Format** (TL;DR, Table, Bullets) and **Tone**.
--   **◈ Write**: Direct AI generation from simple prompts.
--   **◈ Page Insight**: Intelligent web scraping that summarizes the active page's core value.
-
----
-
-## 🛠️ Performance Architecture
-
-CreaText is built on an **Honest Provider System**. Unlike other extensions, we don't hide API limitations or invent quota predictions.
-
-### Three Intelligent Modes
-1.  **🎯 Accuracy (Gemini)**: Uses Google's state-of-the-art models (Flash 2.5/3, Pro) for high-reasoning tasks.
-2.  **⚡ Speed (Groq)**: Leverages LPU™ technology for near-instantaneous text generation using Llama 3 and GPT-OSS models.
-3.  **🛡️ Best Effort**: A robust fallback chain that exhausts Gemini, then cycles through all available Groq models, into OpenRouter to ensure your request finishes.
-
-### Transparent Quota Tracking
-Get raw, unedited snapshots of your Groq rate limits (RPD/TPM) directly from the response headers. No predictions, just facts.
+- Summarize long text into paragraphs, lists, tables, or TL;DR output.
+- Translate text across common languages.
+- Proofread text with corrected output plus a concrete change list.
+- Rewrite text with independent control over format and tone.
+- Write new content from a prompt.
+- Analyze the current page with Page Insight.
+- Real provider-token streaming for plain-text tools in supported modes.
+- Split-view input/output layout with draggable sizing.
+- Local draft persistence across tools and sessions.
+- Theme presets plus custom color controls.
 
 ---
 
-## 💎 Design & UX
+## AI Modes
 
--   **Floating Draggable Panel**: Moves with you. Stays out of the way.
--   **Shadow DOM Isolation**: UI styling that remains pristine, regardless of the host website's CSS.
--   **Wide Layout Split-View**: Side-by-side input/output comparison with a draggable vertical splitter.
--   **Responsive Drawer**: Resizable from all edges and corners with snappy, spring-based animations.
--   **Draft Preservation**: Your text stays where you left it, even when switching tools or adjusting settings.
--   **Modern Theming**: Choose from Oceanic, Forest, Midnight, or Sunrise presets, or build your own custom palette.
+### Accuracy
+
+Uses Gemini models for higher-quality reasoning and general text work.
+
+### Speed
+
+Uses Groq-hosted models for lower-latency responses.
+
+### Best Effort
+
+Uses a fallback chain across saved providers when direct single-provider execution is not enough. This mode prioritizes completion reliability over streaming.
 
 ---
 
-## 🚀 Getting Started
+## Streaming
 
-### 1. Installation
+True streaming is implemented for plain-text operations where incremental output is safe and useful:
+
+- Summarize
+- Translate
+- Rewrite
+- Write
+- Page Insight
+
+Structured operations remain non-streaming by design:
+
+- Extract
+- Proofread
+- Best Effort mode
+
+This keeps JSON, table, and fallback-heavy flows stable while still giving live output where it actually improves the experience.
+
+---
+
+## Provider Notes
+
+- Bring your own API keys. Keys are stored locally in `chrome.storage.local`.
+- Groq quota information is surfaced from provider response headers instead of guessed by the extension.
+- The extension does not fake structured success on empty or invalid provider output.
+
+---
+
+## Installation
+
 ```bash
 git clone https://github.com/Abid-Al-Hossain/creaText_V2.git
 cd creaText_V2
@@ -56,38 +76,33 @@ npm install
 npm run build
 ```
 
-### 2. Loading the Extension
-1. Open `chrome://extensions` in your browser.
-2. Enable **Developer mode**.
-3. Click **Load unpacked** and select the `dist/` folder.
+Then:
 
-### 3. Setup your Keys
-CreaText is **Privacy First**. You bring your own keys; we never see them.
-- **Gemini**: [Google AI Studio](https://aistudio.google.com/app/apikey)
-- **Groq**: [Groq Console](https://console.groq.com/keys)
-- **OpenRouter**: [OpenRouter Settings](https://openrouter.ai/settings/keys)
+1. Open `chrome://extensions`
+2. Enable Developer mode
+3. Click `Load unpacked`
+4. Select the `dist/` folder
 
 ---
 
-## 📖 Technical Stack
+## API Keys
 
--   **Frontend**: React + Vite
--   **Logic**: Manifest V3 Service Workers
--   **Styling**: Vanilla CSS (Premium Design System)
--   **Animations**: Framer Motion
--   **Persistence**: `chrome.storage.local`
+- Gemini: https://aistudio.google.com/app/apikey
+- Groq: https://console.groq.com/keys
+- OpenRouter: https://openrouter.ai/settings/keys
 
 ---
 
-## ⚖️ Product Ethics
+## Stack
 
-CreaText follows a strict **No-Bluff Policy**:
-- ❌ No fake quota predictions.
-- ❌ No hidden semantic-altering chunking.
-- ❌ No "pretend" success states on empty returns.
-- ✅ Full transparency on provider errors and safety blocks.
+- React
+- Vite
+- Chrome Extension Manifest V3
+- Framer Motion
+- Vanilla CSS
 
 ---
 
-## 📄 License
-Licensed under the **ISC License**. Free to use, modify, and distribute.
+## License
+
+Licensed under the ISC License.

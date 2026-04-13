@@ -876,15 +876,35 @@
   border-radius: var(--fai-radius-sm);
   padding: 12px 12px 36px 14px;
 }
+.fai-result--streaming {
+  border-color: color-mix(in srgb, var(--fai-accent) 36%, var(--fai-border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--fai-accent) 12%, transparent);
+}
 .fai-result-meta {
   margin-bottom: 8px;
   font: 500 11px/1.4 var(--fai-font);
   color: var(--fai-text-muted);
 }
+.fai-result-meta--streaming {
+  color: color-mix(in srgb, var(--fai-accent) 74%, var(--fai-text));
+}
 .fai-result-text {
   font: 13px/1.6 var(--fai-font);
   color: var(--fai-text);
   white-space: pre-wrap;
+}
+.fai-result--streaming .fai-result-text:last-child::after,
+.fai-result--streaming .fai-result-list-wrap:last-child::after,
+.fai-result--streaming .fai-result-table-wrap:last-child::after {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 1.05em;
+  margin-left: 3px;
+  vertical-align: -2px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fai-accent) 72%, white);
+  animation: faiStreamCaret .9s ease-in-out infinite;
 }
 .fai-result-list-wrap {
   color: var(--fai-text);
@@ -959,6 +979,10 @@
   transition: color .15s, border-color .15s, background .15s;
 }
 .fai-copy-btn:hover { color: var(--fai-text); border-color: var(--fai-border-hi); }
+.fai-copy-btn:disabled {
+  opacity: .55;
+  cursor: default;
+}
 .fai-copy-btn--copied {
   color: var(--fai-accent);
   border-color: var(--fai-accent);
@@ -1040,6 +1064,10 @@
 @keyframes statusPulse {
   0%, 100% { opacity: .6; }
   50%       { opacity: 1;  }
+}
+@keyframes faiStreamCaret {
+  0%, 44% { opacity: 1; }
+  45%, 100% { opacity: .18; }
 }
 
 /* Resize handles */
