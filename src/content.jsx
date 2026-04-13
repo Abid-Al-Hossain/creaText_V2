@@ -909,6 +909,7 @@ function App() {
   const [active, setActive]           = useState("summarize");
   const [open, setOpen]               = useState(false);
   const [status, setStatus]           = useState({ text: "", loading: false });
+  const [isRunning, setIsRunning]     = useState(false);
   const [fallbackNotice, setFallbackNotice] = useState(null);
   const [results, setResults]         = useState([]);
   const [showSettings, setShowSettings] = useState(false);
@@ -1081,7 +1082,7 @@ function App() {
   }, [getClampedSidePaneWidth, hiddenWidePane, pos.width, showSettings, sidePaneWidth, useSideBySideResults]);
 
   const onDragStart = (e) => {
-    if (e.target.closest(".fai-actions")) return;
+    if (e.target.closest(".fai-iconbtn")) return;
     const target = e.currentTarget;
     const rect   = target.getBoundingClientRect();
     dragState.current = {
@@ -1260,6 +1261,39 @@ function App() {
     }
   }, []);
 
+  const cancelRun = useCallback(() => {
+    cancelStream();
+    cancelReveal();
+    runTokenRef.current += 1;
+    setIsRunning(false);
+    setStatusMsg("Cancelled.");
+    setFallbackNotice(null);
+    setTimeout(() => setStatusMsg(""), 1500);
+  }, [cancelReveal, cancelStream]);
+
+  const minimizeToBubble = useCallback(() => {
+    cancelStream();
+    cancelReveal();
+    runTokenRef.current += 1;
+    setIsRunning(false);
+    setStatusMsg("");
+    setFallbackNotice(null);
+    setShowSettings(false);
+    setOpen(false);
+  }, [cancelReveal, cancelStream]);
+
+  const closeExtension = useCallback(() => {
+    cancelStream();
+    cancelReveal();
+    runTokenRef.current += 1;
+    setIsRunning(false);
+    setStatusMsg("");
+    setFallbackNotice(null);
+    setShowSettings(false);
+    setOpen(false);
+    setEnabled(false);
+  }, [cancelReveal, cancelStream, setEnabled]);
+
   useEffect(() => () => {
     cancelReveal();
     cancelStream();
@@ -1316,6 +1350,7 @@ function App() {
     if (op !== "pageinsight" && !text?.trim()) { setStatusMsg("Please enter some text."); setTimeout(() => setStatusMsg(""), 2000); return; }
     const token = ++runTokenRef.current;
     const labels = { summarize: "Summarizing", translate: "Translating", extract: "Extracting", proofread: "Proofreading", rewrite: "Rewriting", write: "Writing", pageinsight: "Analyzing page" };
+    setIsRunning(true);
     setStatusMsg(`${labels[op] || "Processing"}...`, true);
     setResults([]);
     try {
@@ -1513,11 +1548,18 @@ function App() {
       } else {
         setStatusMsg("Done!");
       }
+      setIsRunning(false);
       setTimeout(() => setStatusMsg(""), 3000);
     } catch (err) {
       streamAbortRef.current = null;
-      if (token !== runTokenRef.current || activeRef.current !== op || showSettingsRef.current) return;
-      if (String(err?.message || "") === "AI stream cancelled.") return;
+      if (token !== runTokenRef.current || activeRef.current !== op || showSettingsRef.current) {
+        setIsRunning(false);
+        return;
+      }
+      if (String(err?.message || "") === "AI stream cancelled.") {
+        setIsRunning(false);
+        return;
+      }
       if (String(err.message || "").startsWith("NO_API_KEY:")) {
         const provider = String(err.message || "").split(":")[1];
         const providerLabel = provider === "groq" ? "Groq" : provider === "openrouter" ? "OpenRouter" : "Gemini";
@@ -1543,6 +1585,7 @@ function App() {
         }
         setTimeout(() => setStatusMsg(""), 6000);
       }
+      setIsRunning(false);
     }
   };
 
@@ -1603,6 +1646,21 @@ function App() {
           transition={SPRING_SOFT}
           style={{ left: pos.left, right: pos.right, top: pos.top, bottom: pos.bottom, width: pos.width, height: pos.height, ...varStyle }}>
 
+          <div className="fai-drawer-window-controls">
+            <button className="fai-iconbtn fai-iconbtn--minimize" aria-label="Minimize to bubble" title="Minimize to bubble"
+              onClick={minimizeToBubble}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
+                <line x1="6" y1="12" x2="18" y2="12"/>
+              </svg>
+            </button>
+            <button className="fai-iconbtn fai-iconbtn--close" aria-label="Close extension" title="Close extension"
+              onClick={closeExtension}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+
           {/* Sidebar */}
           <div className="fai-sidebar">
             <div className="fai-head" onPointerDown={onDragStart}>
@@ -1617,16 +1675,6 @@ function App() {
                   }}>
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                     <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-                  </svg>
-                </button>
-                <button className="fai-iconbtn fai-iconbtn--close" aria-label="Close" title="Close"
-                  onClick={() => {
-                    runTokenRef.current += 1;
-                    setStatusMsg("");
-                    setOpen(false);
-                  }}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
                   </svg>
                 </button>
               </div>
@@ -1703,6 +1751,8 @@ function App() {
                               draft={drafts[active] || defaultPaneState[active]}
                               onDraftChange={(next) => updateDraft(active, next)}
                               onRun={(input, opts) => runOp(active, input, opts)}
+                              onCancel={cancelRun}
+                              busy={isRunning}
                               portalRoot={drawerRef.current}
                             />
                           </div>
@@ -1733,6 +1783,8 @@ function App() {
                           draft={drafts[active] || defaultPaneState[active]}
                           onDraftChange={(next) => updateDraft(active, next)}
                           onRun={(input, opts) => runOp(active, input, opts)}
+                          onCancel={cancelRun}
+                          busy={isRunning}
                           portalRoot={drawerRef.current}
                         />
                       </div>
@@ -2148,8 +2200,7 @@ function Settings({ aiMode, setAiMode, accuracyModel, setAccuracyModel, speedMod
   );
 }
 /* ------------ Pane ------------ */
-function Pane({ active, draft, onDraftChange, onRun, portalRoot = null }) {
-  const [busy, setBusy] = useState(false);
+function Pane({ active, draft, onDraftChange, onRun, onCancel, busy = false, portalRoot = null }) {
   const [translateSearch, setTranslateSearch] = useState("");
   const [translateMenuOpen, setTranslateMenuOpen] = useState(false);
   const input = draft?.input ?? "";
@@ -2199,12 +2250,7 @@ function Pane({ active, draft, onDraftChange, onRun, portalRoot = null }) {
   };
 
   const run = async () => {
-    setBusy(true);
-    try {
-      await onRun(input, opts);
-    } finally {
-      setBusy(false);
-    }
+    await onRun(input, opts);
   };
 
   const OptsUI = {
@@ -2470,17 +2516,31 @@ function Pane({ active, draft, onDraftChange, onRun, portalRoot = null }) {
           disabled={busy}
         />
       )}
-      <motion.button
-        className={`fai-run-btn${busy ? " fai-run-btn--busy" : ""}`}
-        onClick={run}
-        disabled={busy}
-        aria-label={active === "pageinsight" ? "Analyze page" : `Run ${active}`}
-        whileTap={!busy ? { scale: 0.97 } : {}}
-        whileHover={!busy ? { scale: 1.01 } : {}}>
-        {busy
-          ? <><span className="fai-spinner" />{active === "pageinsight" ? "Analyzing..." : "Processing..."}</>
-          : <>{active === "pageinsight" ? "Analyze Page" : "Run"} {"\u203A"}</>}
-      </motion.button>
+      <div className="fai-run-row">
+        <motion.button
+          type="button"
+          className={`fai-run-btn${busy ? " fai-run-btn--busy" : ""}`}
+          onClick={busy ? undefined : run}
+          disabled={busy}
+          aria-label={busy ? "Processing" : (active === "pageinsight" ? "Analyze page" : `Run ${active}`)}
+          whileTap={busy ? {} : { scale: 0.97 }}
+          whileHover={busy ? {} : { scale: 1.01 }}>
+          {busy
+            ? <><span className="fai-spinner" />{active === "pageinsight" ? "Analyzing page..." : "Working..."}</>
+            : <>{active === "pageinsight" ? "Analyze Page" : "Run"} {"\u203A"}</>}
+        </motion.button>
+        {busy && (
+          <button
+            type="button"
+            className="fai-stop-btn"
+            onClick={onCancel}
+            aria-label="Stop active run"
+            title="Stop">
+            <span className="fai-stop-btn-icon" aria-hidden="true" />
+            <span>Stop</span>
+          </button>
+        )}
+      </div>
     </div>
   );
 }

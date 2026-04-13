@@ -146,6 +146,15 @@
   user-select: none;
   flex-shrink: 0;
 }
+.fai-drawer-window-controls {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  z-index: 4;
+}
 .fai-logo-mark {
   width: 26px; height: 26px;
   border-radius: 8px;
@@ -169,8 +178,10 @@
 }
 .fai-actions {
   display: flex;
+  align-items: center;
   gap: 4px;
   margin-left: auto;
+  flex-shrink: 0;
 }
 .fai-iconbtn {
   width: 26px; height: 26px;
@@ -187,6 +198,11 @@
   color: var(--fai-text);
   background: var(--fai-surface-hi);
   border-color: var(--fai-border);
+}
+.fai-iconbtn--minimize:hover {
+  color: color-mix(in srgb, var(--fai-text) 88%, white 12%);
+  background: color-mix(in srgb, var(--fai-accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--fai-accent) 22%, var(--fai-border));
 }
 .fai-iconbtn--close:hover {
   color: #f87171;
@@ -284,7 +300,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 14px 18px 12px;
+  padding: 14px 112px 12px 18px;
   border-bottom: 1px solid var(--fai-border);
   flex-shrink: 0;
 }
@@ -779,7 +795,14 @@
 .fai-input:disabled { opacity: .55; cursor: wait; }
 
 /* Run Button */
+.fai-run-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
 .fai-run-btn {
+  flex: 1;
   width: 100%;
   padding: 12px 20px;
   border-radius: var(--fai-radius-sm);
@@ -823,7 +846,43 @@
     color-mix(in srgb, var(--fai-accent) 54%, var(--fai-surface-ctrl)) 100%
   );
 }
-.fai-run-btn--busy { cursor: wait; }
+.fai-run-btn--busy {
+  opacity: .92;
+  cursor: wait;
+  box-shadow: 0 6px 22px color-mix(in srgb, var(--fai-accent) 32%, transparent);
+}
+.fai-stop-btn {
+  min-width: 92px;
+  min-height: 50px;
+  padding: 0 14px;
+  border-radius: var(--fai-radius-sm);
+  border: 1px solid var(--fai-border-hi);
+  background: color-mix(in srgb, var(--fai-surface) 88%, var(--fai-bg));
+  color: var(--fai-text);
+  font: 600 13px var(--fai-font);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color .15s ease, background .15s ease, color .15s ease, transform .15s ease;
+}
+.fai-stop-btn:hover {
+  border-color: color-mix(in srgb, #ef4444 38%, var(--fai-border-hi));
+  background: color-mix(in srgb, #ef4444 10%, var(--fai-surface));
+  color: color-mix(in srgb, #ffffff 18%, var(--fai-text));
+}
+.fai-stop-btn:active {
+  transform: scale(.98);
+}
+.fai-stop-btn-icon {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: currentColor;
+  flex-shrink: 0;
+}
 
 /* Spinner */
 .fai-spinner {
